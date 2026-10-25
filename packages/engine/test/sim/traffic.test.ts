@@ -600,26 +600,167 @@ describe('hooks (onServe, onCall)', () => {
     }
   })
 
-  it('fake hooks do not alter traffic streams they do not use: traces that never reach the hooked component are identical', () => {
+  it('fake hooks do not alter traffic streams they do not use: ticks without the fault are identical; in fault ticks only instance and cache hit/miss of other traces may change (ADR-003 §8)', () => {
+    // `catalog` is not the gateway's last call: when it fails, the gateway stops before cart and
+    // payment, so fewer requests reach them in that tick and the per-tick balancer counters and
+    // decision streams shift for later traces (ADR-003 §8). A hook active from tick 5 on.
+    const startTick = 5
+    const hooks: FaultHooks = {
+      onCall: (ctx) => (ctx.tick >= startTick && ctx.target === 'catalog' ? { fail: { message: 'nope' } } : undefined),
+    }
+    const touches = (spans: readonly SpanRecord[]) => spans.some((x) => x.component === 'catalog' || x.peer === 'catalog')
+    const withoutInstance = (spans: readonly SpanRecord[] | undefined) => spans?.map((x) => ({ ...x, instance: '' }))
+    const pgCalls = (spans: readonly SpanRecord[] | undefined) => spans?.filter((x) => x.kind === 'client' && x.peer === 'postgres').length
+    let compared = 0
+    let instanceOnly = 0
+    let cacheFlip = 0
     for (let s = 0; s < 10; s++) {
-      for (const tick of [0, 5]) {
-        const plain = run(shop, `iso-${s}`, tick)
-        const hooked = run(shop, `iso-${s}`, tick, {
-          onCall: (ctx) => (ctx.target === 'payment' ? { fail: { message: 'nope' } } : undefined),
-        })
-        const touches = (spans: readonly SpanRecord[]) => spans.some((x) => x.component === 'payment' || x.peer === 'payment')
-        const a = byTrace(plain.spans)
-        const b = byTrace(hooked.spans)
+      // F-2: a tick in which the hook is inactive is byte-identical to the baseline.
+      for (const tick of [0, startTick - 1]) {
+        expect(hashOf(run(shop, `iso-${s}`, tick, hooks))).toBe(hashOf(run(shop, `iso-${s}`, tick)))
+      }
+      for (const tick of [startTick, 12]) {
+        const a = byTrace(run(shop, `iso-${s}`, tick).spans)
+        const b = byTrace(run(shop, `iso-${s}`, tick, hooks).spans)
+        // Same ingress (trace ids and root instances): the gateway balancer is only used by ingress.
         expect([...b.keys()]).toEqual([...a.keys()])
-        let compared = 0
         for (const [traceId, spans] of a) {
+          expect(b.get(traceId)?.[0]?.instance).toBe(spans[0]?.instance)
           if (touches(spans)) continue
-          expect(b.get(traceId)).toEqual(spans)
           compared += 1
+          const other = b.get(traceId) as SpanRecord[]
+          expect(touches(other)).toBe(false)
+          if (JSON.stringify(other) === JSON.stringify(spans)) continue
+          if (JSON.stringify(withoutInstance(other)) === JSON.stringify(withoutInstance(spans))) {
+            instanceOnly += 1
+            continue
+          }
+          // Otherwise the only other thing allowed to change is a cache hit/miss (onMiss to postgres).
+          expect(pgCalls(other), traceId).not.toBe(pgCalls(spans))
+          cacheFlip += 1
         }
-        expect(compared).toBeGreaterThan(8)
       }
     }
+    expect(compared).toBeGreaterThan(100)
+    // The accepted, documented non-isolation actually happens (ADR-003 §8 measured it).
+    expect(instanceOnly).toBeGreaterThan(0)
+    expect(instanceOnly + cacheFlip).toBeLessThan(compared)
+  })
+})
+
+// --- stream keys (T1.32) ----------------------------------------------------------------------
+
+describe('stream keys (ADR-003 §2, §8–9)', () => {
+  /** Chain front -> back -> store, the same latency spec everywhere and timeouts that never fire. */
+  function latencyChain(): SystemDefinition {
+    const spec = { ...base, latencyP50Ms: 100, latencyP99Ms: 1000 }
+    const call = (target: string, operation: string) => ({ target, operation, ratio: 1, timeoutMs: 60_000, retries: 0 })
+    return {
+      name: 'latency-chain',
+      services: [
+        { ...spec, name: 'front', ingress: { ratePerTick: 20, operation: 'http.request' }, calls: [call('back', 'back.do')], dbPoolSize: 5 },
+        { ...spec, name: 'back', calls: [call('store', 'db.query')], dbPoolSize: 5 },
+      ],
+      deps: [{ ...spec, name: 'store', kind: 'database', maxConnections: 50 }],
+    }
+  }
+
+  /** Own time of a server span: its duration minus its client calls (sequential, no waits here). */
+  const ownMs = (spans: readonly SpanRecord[], server: SpanRecord): number =>
+    server.durationMs - childrenOf(spans, server.spanId).filter((s) => s.kind === 'client').reduce((sum, s) => sum + s.durationMs, 0)
+
+  it("the own latency of each server span is drawn from ('lat', traceId, spanSeq): spans of one trace draw distinct values", () => {
+    const world = buildWorld(latencyChain(), 'lat')
+    let traces = 0
+    let allEqual = 0
+    for (const seed of ['lat-a', 'lat-b', 'lat-c']) {
+      const factory = createRngFactory(seed)
+      for (const tick of [0, 7]) {
+        const result = run(world, seed, tick)
+        expect(treeViolations(result, tick)).toEqual([])
+        for (const [traceId, spans] of byTrace(result.spans)) {
+          const servers = spans.filter((s) => s.kind === 'server')
+          expect(servers.map((s) => s.component)).toEqual(['front', 'back', 'store'])
+          const owns = servers.map((s) => ownMs(spans, s))
+          servers.forEach((s, i) => {
+            const spanSeq = spans.indexOf(s)
+            expect(s.spanId).toBe(`${traceId}s${spanSeq}`)
+            // Independent recomputation: a key without spanSeq would give every span the same draw.
+            expect(owns[i], s.spanId).toBe(sampleLatencyMs(factory('lat', traceId, spanSeq), 100, 1000))
+          })
+          traces += 1
+          if (new Set(owns).size === 1) allEqual += 1
+        }
+      }
+    }
+    expect(traces).toBe(3 * 2 * 20)
+    // Same spec on every component: only spanSeq in the key keeps the three draws apart.
+    expect(allEqual).toBe(0)
+  })
+
+  it("('traffic', tick, component) is drawn a fixed number of times per server span: one per call plus one per cache call, made or not", () => {
+    const system: SystemDefinition = {
+      name: 'draws',
+      services: [
+        {
+          ...base,
+          name: 'app',
+          replicas: 2,
+          ingress: { ratePerTick: 30, operation: 'http.request' },
+          calls: [
+            {
+              target: 'kv',
+              operation: 'kv.get',
+              ratio: 0.5,
+              timeoutMs: 1000,
+              retries: 0,
+              onMiss: { target: 'sql', operation: 'db.fallback', timeoutMs: 1000, retries: 0 },
+            },
+            { target: 'sql', operation: 'db.query', ratio: 0.7, timeoutMs: 1000, retries: 0 },
+          ],
+          dbPoolSize: 5,
+        },
+      ],
+      deps: [
+        { ...base, name: 'kv', kind: 'cache', maxConnections: 100, cacheHitRatio: 0.5 },
+        { ...base, name: 'sql', kind: 'database', maxConnections: 100 },
+      ],
+    }
+    const world = buildWorld(system, 'draws')
+    // Fails every request served by app-1 before any call: its plan is drawn all the same.
+    const failing: FaultHooks = { onServe: (ctx) => (ctx.instance === 'app-1' ? { fail: { message: 'boom' } } : undefined) }
+    const combos = new Set<string>()
+    for (const seed of ['draws-a', 'draws-b', 'draws-c']) {
+      for (const tick of [0, 3]) {
+        for (const hooks of [{}, failing]) {
+          const result = run(world, seed, tick, hooks)
+          // Reference: read the same stream, 3 draws per app server span, in trace order.
+          const stream = createRngFactory(seed)('traffic', tick, 'app')
+          let served = 0
+          for (const spans of byTrace(result.spans).values()) {
+            const kvMade = stream.chance(0.5)
+            const kvHit = stream.chance(0.5)
+            const sqlMade = stream.chance(0.7)
+            const ops = spans.filter((s) => s.kind === 'client').map((s) => s.operation)
+            if (spans[0]?.status === 'error') {
+              expect(spans[0]?.instance).toBe('app-1')
+              expect(ops).toEqual([])
+              continue
+            }
+            served += 1
+            combos.add(`${kvMade}/${kvHit}/${sqlMade}`)
+            expect(ops).toEqual([
+              ...(kvMade ? ['kv.get'] : []),
+              ...(kvMade && !kvHit ? ['db.fallback'] : []),
+              ...(sqlMade ? ['db.query'] : []),
+            ])
+          }
+          expect(served).toBe(hooks === failing ? 15 : 30)
+        }
+      }
+    }
+    // Every combination of made / hit / made occurred, including "cache not called, hit still drawn".
+    expect(combos.size).toBe(8)
   })
 })
 

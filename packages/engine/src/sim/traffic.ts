@@ -18,7 +18,9 @@
  * - `onServe.fail` fails the request (status 'error') without making calls;
  * - a service makes its calls in order; whether each call is made (`ratio`) and whether a cache call
  *   hits (`cacheHitRatio`) are drawn up front from ('traffic', tick, component), always the same
- *   number of draws per server span, so faults elsewhere never shift these decisions;
+ *   number of draws per server span (one per call, plus one more per call to a cache, whether the
+ *   call is made or not and whatever happens next), so a fault never changes how many draws one
+ *   server span consumes (see "Isolation" below for what that does and does not guarantee);
  * - the first non-cache call that fails for good stops the remaining calls and turns the server
  *   span into 'error' (propagation). Cache failures never propagate: a miss (by ratio, by
  *   `forceCacheMiss`, by error or timeout of the cache) runs `onMiss`, whose failure does propagate.
@@ -39,6 +41,18 @@
  * the ones lost at the edge), spanId = `${traceId}s${n}` with n the span's position in the trace.
  * Output order: traces in start order, spans of a trace in pre-order (ADR-005).
  * All durations are integer ms; startMs is relative to the start of the root.
+ *
+ * Isolation (ADR-003 §8–9): streams isolate per tick and per trace, NOT per component. The
+ * round-robin counter of each target and the decision stream of each component live for one tick
+ * and are consumed per request, in trace order. So when a fault changes how many requests reach a
+ * component in a tick (a caller stops its remaining calls after an error, a retry adds one more
+ * balancer pick), later traces of that same tick, even ones that never touch the faulty component,
+ * can land on another instance or flip a cache hit/miss. What does hold: ticks without an active
+ * fault are identical to the baseline (F-2), because nothing crosses ticks; noise and ask() never
+ * touch these streams (S-4, Q-3); and the own latency of a server span depends only on
+ * ('lat', traceId, spanSeq), so spans that a fault inserts into a trace (a wait, a retry) shift
+ * `spanSeq` only inside that trace. Fault tests therefore compare averages over seeds, never
+ * traces or instances against the baseline in the ticks where the fault is active.
  */
 import type {
   CallSpec,
