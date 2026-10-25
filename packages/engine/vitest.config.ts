@@ -8,6 +8,13 @@ export default defineConfig({
   test: {
     include: ['test/**/*.test.ts'],
     environment: 'node',
+    // CT-1: expectTypeOf assertions in *.types.test.ts must fail `pnpm test`, not only `typecheck`.
+    // Vitest runs tsc over the node-side project; any type error fails the run.
+    typecheck: {
+      enabled: true,
+      include: ['test/**/*.types.test.ts'],
+      tsconfig: './tsconfig.node.json',
+    },
     coverage: {
       provider: 'v8',
       include: ['src/**'],
