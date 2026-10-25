@@ -1,11 +1,13 @@
 /**
  * T1.12 — CLI argv parser and help text (ADR-007; PRD CLI-2, CLI-3 parse errors, CLI-4, D-5).
+ * T1.23 — parse errors are the shared EngineError (#15); `params` has no prototype (#22).
  */
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
-import { CliUsageError, MAX_TICKS, parseCliArgs, parseFaultSpec } from '../../src/cli/args.js'
+import { MAX_TICKS, parseCliArgs, parseFaultSpec } from '../../src/cli/args.js'
 import { helpText } from '../../src/cli/help.js'
+import { EngineError, isEngineError } from '../../src/errors.js'
 import { faultCatalog, faultKinds } from '../../src/faults/catalog.js'
 import type { CliCommand, EngineErrorInfo } from '../../src/types.js'
 
@@ -16,7 +18,8 @@ function usageError(argv: readonly string[]): EngineErrorInfo {
   try {
     parseCliArgs(argv)
   } catch (error) {
-    expect(error).toBeInstanceOf(CliUsageError)
+    expect(error).toBeInstanceOf(EngineError)
+    expect(isEngineError(error)).toBe(true)
     expect(error).toBeInstanceOf(Error)
     const info = error as EngineErrorInfo
     expect(info.name).toBe('EngineError')
@@ -79,6 +82,16 @@ describe('parseCliArgs: --fault syntax (CLI-2)', () => {
     expect(parseFaultSpec('disk_full:startTick=-3,failRatio=7')).toEqual({ kind: 'disk_full', startTick: -3, params: { failRatio: 7 } })
   })
 
+  it('params has no prototype: __proto__ and constructor become own keys for resolveFaults (#22)', () => {
+    const input = parseFaultSpec('bad_deploy:__proto__=1,constructor=2')
+    expect(input.params).toBeDefined()
+    const params = input.params as Record<string, number>
+    expect(Object.getPrototypeOf(params)).toBeNull()
+    expect(Object.keys(params)).toEqual(['__proto__', 'constructor'])
+    expect(params['__proto__']).toBe(1)
+    expect(params['constructor']).toBe(2)
+  })
+
   it('leaves unknown kinds and keys to resolveFaults (syntax only)', () => {
     expect(parseFaultSpec('no_such_kind:foo=1')).toEqual({ kind: 'no_such_kind', params: { foo: 1 } })
   })
@@ -118,9 +131,12 @@ describe('parseCliArgs: usage errors (CLI-3)', () => {
     expect(usageError(['simulate', '--ticks', '10']).field).toBe('--seed')
   })
 
-  it('--seed empty or given twice', () => {
-    expect(usageError(['simulate', '--seed=', '--ticks', '10']).field).toBe('--seed')
+  it('--seed given twice', () => {
     expect(usageError(['simulate', '--seed', 'a', '--seed', 'b', '--ticks', '10']).field).toBe('--seed')
+  })
+
+  it("an empty --seed parses: buildWorld rejects it as 'invalid_seed' (ADR-007 Emenda 1)", () => {
+    expect(parseCliArgs(['simulate', '--seed=', '--ticks', '10'])).toEqual({ kind: 'simulate', seed: '', ticks: 10, faults: [] })
   })
 
   it('--seed without value', () => {

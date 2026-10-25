@@ -15,7 +15,8 @@
  * Pure function of argv (DET): no process, no I/O. Imports only `node:util` (D-5).
  */
 import { parseArgs } from 'node:util'
-import type { EngineErrorCode, EngineErrorInfo, FaultInput, ParseCliArgs } from '../types.js'
+import { EngineError } from '../errors.js'
+import type { FaultInput, ParseCliArgs } from '../types.js'
 
 /** Accepted range of `--ticks` (ADR-007). */
 export const MIN_TICKS = 1
@@ -24,27 +25,13 @@ export const MAX_TICKS = 100_000
 export const COMMANDS = ['simulate'] as const
 const RESERVED_FAULT_KEYS = ['target', 'startTick'] as const
 
-/**
- * Usage error thrown by the parser: an EngineErrorInfo with code 'usage' (CLI-3).
- *
- * src/errors.ts (the shared EngineError class, task T1.4) is not on main yet; this class
- * implements the same contract (name 'EngineError', code, field, received, validValues) so
- * the CLI main (T1.23) can treat both alike by `name`/`code` and exit 2.
- */
-export class CliUsageError extends Error implements EngineErrorInfo {
-  override readonly name = 'EngineError' as const
-  readonly code: EngineErrorCode = 'usage'
-  readonly field: string
-  readonly received: unknown
-  readonly validValues?: readonly (string | number)[]
-
-  constructor(field: string, received: unknown, detail: string, validValues?: readonly (string | number)[]) {
-    const valid = validValues === undefined ? '' : ` Valid values: ${validValues.join(', ')}.`
-    super(`Invalid ${field}: ${detail}.${valid}`)
-    this.field = field
-    this.received = received
-    if (validValues !== undefined) this.validValues = validValues
-  }
+/** Usage error (CLI-3): the shared EngineError with code 'usage' (ADR-007 Emenda 1, #15). */
+function usage(field: string, received: unknown, detail: string, validValues?: readonly (string | number)[]): EngineError {
+  return new EngineError(
+    validValues === undefined
+      ? { code: 'usage', field, received, message: detail }
+      : { code: 'usage', field, received, validValues, message: detail },
+  )
 }
 
 const OPTIONS = {
@@ -66,12 +53,12 @@ export const parseCliArgs: ParseCliArgs = (argv) => {
 
   if (command === undefined) {
     if (values.help === true) return { kind: 'help', topic: 'root' }
-    throw new CliUsageError('command', null, 'missing command (try --help)', COMMANDS)
+    throw usage('command', null, 'missing command (try --help)', COMMANDS)
   }
-  if (command !== 'simulate') throw new CliUsageError('command', command, `unknown command '${command}'`, COMMANDS)
+  if (command !== 'simulate') throw usage('command', command, `unknown command '${command}'`, COMMANDS)
   if (values.help === true) return { kind: 'help', topic: 'simulate' }
   if (extra.length > 0) {
-    throw new CliUsageError('arguments', extra, `unexpected positional argument '${extra[0] as string}'`, OPTION_NAMES)
+    throw usage('arguments', extra, `unexpected positional argument '${extra[0] as string}'`, OPTION_NAMES)
   }
 
   return {
@@ -86,7 +73,7 @@ function tokenize(argv: readonly string[]) {
   try {
     return parseArgs({ args: [...argv], options: OPTIONS, allowPositionals: true, strict: true })
   } catch (error) {
-    throw new CliUsageError('arguments', [...argv], parseErrorDetail(error), OPTION_NAMES)
+    throw usage('arguments', [...argv], parseErrorDetail(error), OPTION_NAMES)
   }
 }
 
@@ -97,22 +84,21 @@ function parseErrorDetail(error: unknown): string {
 }
 
 function single(values: readonly string[] | undefined, field: string): string {
-  if (values === undefined || values.length === 0) throw new CliUsageError(field, null, `${field} is required`)
-  if (values.length > 1) throw new CliUsageError(field, [...values], `${field} given ${values.length} times; give it once`)
+  if (values === undefined || values.length === 0) throw usage(field, null, `${field} is required`)
+  if (values.length > 1) throw usage(field, [...values], `${field} given ${values.length} times; give it once`)
   return values[0] as string
 }
 
+/** An empty seed is not a usage error: buildWorld rejects it as 'invalid_seed' (ADR-007 Emenda 1). */
 function parseSeed(values: readonly string[] | undefined): string {
-  const seed = single(values, '--seed')
-  if (seed === '') throw new CliUsageError('--seed', seed, '--seed must be a non-empty string')
-  return seed
+  return single(values, '--seed')
 }
 
 function parseTicks(values: readonly string[] | undefined): number {
   const raw = single(values, '--ticks')
   const ticks = INTEGER.test(raw) ? Number(raw) : Number.NaN
   if (!Number.isSafeInteger(ticks) || ticks < MIN_TICKS || ticks > MAX_TICKS) {
-    throw new CliUsageError('--ticks', raw, `--ticks must be an integer in ${MIN_TICKS}..${MAX_TICKS}, got '${raw}'`, [
+    throw usage('--ticks', raw, `--ticks must be an integer in ${MIN_TICKS}..${MAX_TICKS}, got '${raw}'`, [
       `${MIN_TICKS}..${MAX_TICKS}`,
     ])
   }
@@ -123,33 +109,35 @@ function parseTicks(values: readonly string[] | undefined): number {
 export function parseFaultSpec(spec: string, field = '--fault'): FaultInput {
   const colon = spec.indexOf(':')
   const kind = (colon === -1 ? spec : spec.slice(0, colon)).trim()
-  if (kind === '') throw new CliUsageError(field, spec, `missing fault kind in '${spec}' (syntax: <kind>[:key=value,...])`)
+  if (kind === '') throw usage(field, spec, `missing fault kind in '${spec}' (syntax: <kind>[:key=value,...])`)
   const input: FaultInput = { kind }
   if (colon === -1) return input
 
   const body = spec.slice(colon + 1)
-  if (body.trim() === '') throw new CliUsageError(field, spec, `empty parameter list after '${kind}:'`)
+  if (body.trim() === '') throw usage(field, spec, `empty parameter list after '${kind}:'`)
   const seen = new Set<string>()
-  const params: Record<string, number> = {}
+  // No prototype (#22): a key such as `__proto__` becomes an own property and reaches
+  // resolveFaults, which rejects it as 'unknown_param' (ADR-004 Emenda 1).
+  const params: Record<string, number> = Object.create(null) as Record<string, number>
   let hasParams = false
   for (const pair of body.split(',')) {
     const eq = pair.indexOf('=')
     const key = (eq === -1 ? pair : pair.slice(0, eq)).trim()
     const value = eq === -1 ? '' : pair.slice(eq + 1).trim()
     if (eq === -1 || key === '' || value === '') {
-      throw new CliUsageError(field, spec, `malformed pair '${pair}' (expected key=value)`)
+      throw usage(field, spec, `malformed pair '${pair}' (expected key=value)`)
     }
-    if (seen.has(key)) throw new CliUsageError(`${field}.${key}`, spec, `key '${key}' given more than once`)
+    if (seen.has(key)) throw usage(`${field}.${key}`, spec, `key '${key}' given more than once`)
     seen.add(key)
 
     if (key === 'target') {
       input.target = value
     } else if (key === 'startTick') {
-      if (!INTEGER.test(value)) throw new CliUsageError(`${field}.startTick`, value, `startTick must be an integer, got '${value}'`)
+      if (!INTEGER.test(value)) throw usage(`${field}.startTick`, value, `startTick must be an integer, got '${value}'`)
       input.startTick = Number(value)
     } else {
       if (!NUMBER.test(value)) {
-        throw new CliUsageError(`${field}.${key}`, value, `parameter '${key}' must be a number, got '${value}'`)
+        throw usage(`${field}.${key}`, value, `parameter '${key}' must be a number, got '${value}'`)
       }
       params[key] = Number(value)
       hasParams = true
