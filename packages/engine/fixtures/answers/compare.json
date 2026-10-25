@@ -1,0 +1,685 @@
+[
+  {
+    "question": {
+      "kind": "compare",
+      "service": "payment",
+      "metric": "p95",
+      "by": "instance"
+    },
+    "data": {
+      "kind": "compare",
+      "service": "payment",
+      "metric": "p95",
+      "by": "instance",
+      "from": 0,
+      "to": 30,
+      "series": [
+        {
+          "label": "payment-0",
+          "points": [
+            {
+              "tick": 0,
+              "value": 0
+            },
+            {
+              "tick": 1,
+              "value": 0
+            },
+            {
+              "tick": 2,
+              "value": 0
+            },
+            {
+              "tick": 3,
+              "value": 0
+            },
+            {
+              "tick": 4,
+              "value": 64
+            },
+            {
+              "tick": 5,
+              "value": 122
+            },
+            {
+              "tick": 6,
+              "value": 0
+            },
+            {
+              "tick": 7,
+              "value": 0
+            },
+            {
+              "tick": 8,
+              "value": 0
+            },
+            {
+              "tick": 9,
+              "value": 0
+            },
+            {
+              "tick": 10,
+              "value": 0
+            },
+            {
+              "tick": 11,
+              "value": 0
+            },
+            {
+              "tick": 12,
+              "value": 66
+            },
+            {
+              "tick": 13,
+              "value": 76
+            },
+            {
+              "tick": 14,
+              "value": 0
+            },
+            {
+              "tick": 15,
+              "value": 52
+            },
+            {
+              "tick": 16,
+              "value": 0
+            },
+            {
+              "tick": 17,
+              "value": 0
+            },
+            {
+              "tick": 18,
+              "value": 57
+            },
+            {
+              "tick": 19,
+              "value": 0
+            },
+            {
+              "tick": 20,
+              "value": 0
+            },
+            {
+              "tick": 21,
+              "value": 0
+            },
+            {
+              "tick": 22,
+              "value": 0
+            },
+            {
+              "tick": 23,
+              "value": 17
+            },
+            {
+              "tick": 24,
+              "value": 0
+            },
+            {
+              "tick": 25,
+              "value": 0
+            },
+            {
+              "tick": 26,
+              "value": 0
+            },
+            {
+              "tick": 27,
+              "value": 0
+            },
+            {
+              "tick": 28,
+              "value": 0
+            },
+            {
+              "tick": 29,
+              "value": 38
+            },
+            {
+              "tick": 30,
+              "value": 93
+            }
+          ]
+        },
+        {
+          "label": "payment-1",
+          "points": [
+            {
+              "tick": 0,
+              "value": 70
+            },
+            {
+              "tick": 1,
+              "value": 41
+            },
+            {
+              "tick": 2,
+              "value": 0
+            },
+            {
+              "tick": 3,
+              "value": 46
+            },
+            {
+              "tick": 4,
+              "value": 60
+            },
+            {
+              "tick": 5,
+              "value": 91
+            },
+            {
+              "tick": 6,
+              "value": 0
+            },
+            {
+              "tick": 7,
+              "value": 0
+            },
+            {
+              "tick": 8,
+              "value": 0
+            },
+            {
+              "tick": 9,
+              "value": 80
+            },
+            {
+              "tick": 10,
+              "value": 61
+            },
+            {
+              "tick": 11,
+              "value": 0
+            },
+            {
+              "tick": 12,
+              "value": 0
+            },
+            {
+              "tick": 13,
+              "value": 77
+            },
+            {
+              "tick": 14,
+              "value": 30
+            },
+            {
+              "tick": 15,
+              "value": 0
+            },
+            {
+              "tick": 16,
+              "value": 0
+            },
+            {
+              "tick": 17,
+              "value": 0
+            },
+            {
+              "tick": 18,
+              "value": 80
+            },
+            {
+              "tick": 19,
+              "value": 0
+            },
+            {
+              "tick": 20,
+              "value": 0
+            },
+            {
+              "tick": 21,
+              "value": 101
+            },
+            {
+              "tick": 22,
+              "value": 75
+            },
+            {
+              "tick": 23,
+              "value": 38
+            },
+            {
+              "tick": 24,
+              "value": 0
+            },
+            {
+              "tick": 25,
+              "value": 0
+            },
+            {
+              "tick": 26,
+              "value": 0
+            },
+            {
+              "tick": 27,
+              "value": 0
+            },
+            {
+              "tick": 28,
+              "value": 0
+            },
+            {
+              "tick": 29,
+              "value": 16
+            },
+            {
+              "tick": 30,
+              "value": 0
+            }
+          ]
+        },
+        {
+          "label": "payment-2",
+          "points": [
+            {
+              "tick": 0,
+              "value": 0
+            },
+            {
+              "tick": 1,
+              "value": 52
+            },
+            {
+              "tick": 2,
+              "value": 12
+            },
+            {
+              "tick": 3,
+              "value": 25
+            },
+            {
+              "tick": 4,
+              "value": 0
+            },
+            {
+              "tick": 5,
+              "value": 42
+            },
+            {
+              "tick": 6,
+              "value": 33
+            },
+            {
+              "tick": 7,
+              "value": 0
+            },
+            {
+              "tick": 8,
+              "value": 0
+            },
+            {
+              "tick": 9,
+              "value": 0
+            },
+            {
+              "tick": 10,
+              "value": 0
+            },
+            {
+              "tick": 11,
+              "value": 0
+            },
+            {
+              "tick": 12,
+              "value": 69
+            },
+            {
+              "tick": 13,
+              "value": 83
+            },
+            {
+              "tick": 14,
+              "value": 0
+            },
+            {
+              "tick": 15,
+              "value": 0
+            },
+            {
+              "tick": 16,
+              "value": 41
+            },
+            {
+              "tick": 17,
+              "value": 0
+            },
+            {
+              "tick": 18,
+              "value": 55
+            },
+            {
+              "tick": 19,
+              "value": 0
+            },
+            {
+              "tick": 20,
+              "value": 0
+            },
+            {
+              "tick": 21,
+              "value": 0
+            },
+            {
+              "tick": 22,
+              "value": 30
+            },
+            {
+              "tick": 23,
+              "value": 31
+            },
+            {
+              "tick": 24,
+              "value": 0
+            },
+            {
+              "tick": 25,
+              "value": 0
+            },
+            {
+              "tick": 26,
+              "value": 0
+            },
+            {
+              "tick": 27,
+              "value": 0
+            },
+            {
+              "tick": 28,
+              "value": 88
+            },
+            {
+              "tick": 29,
+              "value": 33
+            },
+            {
+              "tick": 30,
+              "value": 0
+            }
+          ]
+        }
+      ]
+    },
+    "tickCost": 2
+  },
+  {
+    "question": {
+      "kind": "compare",
+      "service": "payment",
+      "metric": "p95",
+      "by": "lastWeek"
+    },
+    "data": {
+      "kind": "compare",
+      "service": "payment",
+      "metric": "p95",
+      "by": "lastWeek",
+      "from": 0,
+      "to": 30,
+      "series": [
+        {
+          "label": "current",
+          "points": [
+            {
+              "tick": 0,
+              "value": 70
+            },
+            {
+              "tick": 1,
+              "value": 52
+            },
+            {
+              "tick": 2,
+              "value": 12
+            },
+            {
+              "tick": 3,
+              "value": 46
+            },
+            {
+              "tick": 4,
+              "value": 64
+            },
+            {
+              "tick": 5,
+              "value": 122
+            },
+            {
+              "tick": 6,
+              "value": 33
+            },
+            {
+              "tick": 7,
+              "value": 0
+            },
+            {
+              "tick": 8,
+              "value": 0
+            },
+            {
+              "tick": 9,
+              "value": 80
+            },
+            {
+              "tick": 10,
+              "value": 61
+            },
+            {
+              "tick": 11,
+              "value": 0
+            },
+            {
+              "tick": 12,
+              "value": 69
+            },
+            {
+              "tick": 13,
+              "value": 83
+            },
+            {
+              "tick": 14,
+              "value": 30
+            },
+            {
+              "tick": 15,
+              "value": 52
+            },
+            {
+              "tick": 16,
+              "value": 41
+            },
+            {
+              "tick": 17,
+              "value": 0
+            },
+            {
+              "tick": 18,
+              "value": 80
+            },
+            {
+              "tick": 19,
+              "value": 0
+            },
+            {
+              "tick": 20,
+              "value": 0
+            },
+            {
+              "tick": 21,
+              "value": 101
+            },
+            {
+              "tick": 22,
+              "value": 75
+            },
+            {
+              "tick": 23,
+              "value": 38
+            },
+            {
+              "tick": 24,
+              "value": 0
+            },
+            {
+              "tick": 25,
+              "value": 0
+            },
+            {
+              "tick": 26,
+              "value": 0
+            },
+            {
+              "tick": 27,
+              "value": 0
+            },
+            {
+              "tick": 28,
+              "value": 88
+            },
+            {
+              "tick": 29,
+              "value": 38
+            },
+            {
+              "tick": 30,
+              "value": 93
+            }
+          ]
+        },
+        {
+          "label": "lastWeek",
+          "points": [
+            {
+              "tick": 0,
+              "value": 31
+            },
+            {
+              "tick": 1,
+              "value": 45
+            },
+            {
+              "tick": 2,
+              "value": 63
+            },
+            {
+              "tick": 3,
+              "value": 27
+            },
+            {
+              "tick": 4,
+              "value": 34
+            },
+            {
+              "tick": 5,
+              "value": 100
+            },
+            {
+              "tick": 6,
+              "value": 70
+            },
+            {
+              "tick": 7,
+              "value": 76
+            },
+            {
+              "tick": 8,
+              "value": 33
+            },
+            {
+              "tick": 9,
+              "value": 64
+            },
+            {
+              "tick": 10,
+              "value": 0
+            },
+            {
+              "tick": 11,
+              "value": 0
+            },
+            {
+              "tick": 12,
+              "value": 0
+            },
+            {
+              "tick": 13,
+              "value": 0
+            },
+            {
+              "tick": 14,
+              "value": 0
+            },
+            {
+              "tick": 15,
+              "value": 49
+            },
+            {
+              "tick": 16,
+              "value": 99
+            },
+            {
+              "tick": 17,
+              "value": 84
+            },
+            {
+              "tick": 18,
+              "value": 120
+            },
+            {
+              "tick": 19,
+              "value": 0
+            },
+            {
+              "tick": 20,
+              "value": 78
+            },
+            {
+              "tick": 21,
+              "value": 71
+            },
+            {
+              "tick": 22,
+              "value": 38
+            },
+            {
+              "tick": 23,
+              "value": 0
+            },
+            {
+              "tick": 24,
+              "value": 66
+            },
+            {
+              "tick": 25,
+              "value": 46
+            },
+            {
+              "tick": 26,
+              "value": 63
+            },
+            {
+              "tick": 27,
+              "value": 0
+            },
+            {
+              "tick": 28,
+              "value": 0
+            },
+            {
+              "tick": 29,
+              "value": 52
+            },
+            {
+              "tick": 30,
+              "value": 50
+            }
+          ]
+        }
+      ]
+    },
+    "tickCost": 2
+  }
+]

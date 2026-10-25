@@ -1,0 +1,127 @@
+[
+  {
+    "question": {
+      "kind": "logs",
+      "service": "payment",
+      "window": 30
+    },
+    "data": {
+      "kind": "logs",
+      "service": "payment",
+      "from": 0,
+      "to": 30,
+      "entries": [
+        {
+          "type": "log",
+          "tick": 3,
+          "component": "payment",
+          "instance": "payment-1",
+          "level": "info",
+          "message": "request completed",
+          "traceId": "t3r5",
+          "attrs": {
+            "operation": "payment.checkout",
+            "durationMs": 46
+          }
+        },
+        {
+          "type": "log",
+          "tick": 6,
+          "component": "payment",
+          "instance": "payment-2",
+          "level": "info",
+          "message": "request completed",
+          "traceId": "t6r11",
+          "attrs": {
+            "operation": "payment.checkout",
+            "durationMs": 33
+          }
+        },
+        {
+          "type": "log",
+          "tick": 10,
+          "component": "payment",
+          "instance": "payment-1",
+          "level": "info",
+          "message": "request completed",
+          "traceId": "t10r10",
+          "attrs": {
+            "operation": "payment.checkout",
+            "durationMs": 61
+          }
+        },
+        {
+          "type": "log",
+          "tick": 12,
+          "component": "payment",
+          "instance": "payment-0",
+          "level": "info",
+          "message": "request completed",
+          "traceId": "t12r7",
+          "attrs": {
+            "operation": "payment.checkout",
+            "durationMs": 66
+          }
+        },
+        {
+          "type": "log",
+          "tick": 14,
+          "component": "payment",
+          "instance": "payment-1",
+          "level": "info",
+          "message": "request completed",
+          "traceId": "t14r3",
+          "attrs": {
+            "operation": "payment.checkout",
+            "durationMs": 30
+          }
+        },
+        {
+          "type": "log",
+          "tick": 18,
+          "component": "payment",
+          "instance": "payment-1",
+          "level": "info",
+          "message": "request completed",
+          "traceId": "t18r8",
+          "attrs": {
+            "operation": "payment.checkout",
+            "durationMs": 77
+          }
+        },
+        {
+          "type": "log",
+          "tick": 23,
+          "component": "payment",
+          "instance": "payment-1",
+          "level": "info",
+          "message": "request completed",
+          "traceId": "t23r1",
+          "attrs": {
+            "operation": "payment.checkout",
+            "durationMs": 38
+          }
+        }
+      ]
+    },
+    "tickCost": 1
+  },
+  {
+    "question": {
+      "kind": "logs",
+      "service": "gateway",
+      "window": 30,
+      "filter": {
+        "level": "error"
+      }
+    },
+    "data": {
+      "kind": "logs",
+      "service": "gateway",
+      "from": 0,
+      "to": 30,
+      "entries": []
+    },
+    "tickCost": 1
+  }
+]
