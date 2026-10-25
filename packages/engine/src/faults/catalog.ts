@@ -155,8 +155,10 @@ export const faultCatalog: FaultCatalog = {
     defaultStartTick: DEFAULT_START_TICK,
     targetRule: 'cache',
     params: {
+      // 30 ticks (5 min): the signature window (startTick+6..+11) must still be cold, otherwise
+      // nothing outside the cache deviates there (F-4, and the p50 condition of F-3 row 7).
       warmupTicks: {
-        default: 6,
+        default: 30,
         min: 1,
         max: 60,
         integer: true,
