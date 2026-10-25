@@ -1,9 +1,10 @@
 /**
- * T1.18 — fault `disk_full` (ADR-004; PRD F-1, F-2, F-3 row 2, F-4; DET).
+ * T1.18 / T1.36 — fault `disk_full` (ADR-004 and its Emenda 2; PRD F-1, F-2, F-3 row 2, F-4; DET).
  *
- * Signature assertions compare window means over >= 10 seeds (signature window = ticks
- * startTick+6 .. startTick+11), never per-trace or per-instance equality against the baseline
- * while the fault is active (ADR-003 §8).
+ * Signature assertions follow the seed aggregation rule R1–R5 and the F-4 eligibility rules
+ * E1–E4 (PRD Emenda 2) through test/support/signature.ts: window means over the seeds of
+ * `signatureSeeds` (replaceable with ENGINE_QA_SEEDS), never per-trace or per-instance equality
+ * against the baseline while the fault is active (ADR-003 §8).
  */
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
@@ -19,16 +20,21 @@ import { serializeRecord, toNdjson } from '../../src/sim/serialize.js'
 import { simulate } from '../../src/sim/simulation.js'
 import { buildWorld } from '../../src/world/build.js'
 import { defaultShop } from '../../src/world/default-shop.js'
-import type { FaultInput, LogRecord, MetricName, MetricRecord, ServeContext, SystemDefinition, TelemetryRecord } from '../../src/types.js'
+import { assertEligibleF4, assertPass, effect, everySeed, signatureSeeds, signatureWindow, windowMean } from '../support/signature.js'
+import type { FaultInput, LogRecord, ServeContext, SystemDefinition, TelemetryRecord } from '../../src/types.js'
 
 const KIND = 'disk_full'
 const START = faultCatalog[KIND].defaultStartTick
 const TARGET = faultCatalog[KIND].defaultTarget
-const WINDOW = Array.from({ length: 6 }, (_, i) => START + 6 + i)
+const FAIL_RATIO = faultCatalog[KIND].params['failRatio']!.default
+const WINDOW = signatureWindow(START)
 const TICKS = START + 12
-const SEEDS = Array.from({ length: 12 }, (_, i) => `disk-${i}`)
-/** Services of the default-shop that call postgres (directly or on a cache miss). */
-const DEPENDENTS = ['auth', 'catalog', 'cart', 'payment', 'orders-worker']
+const SEEDS = signatureSeeds('disk')
+/**
+ * The fixed dependent of F-3 row 2 and pair of F-4 (ADR-004 Emenda 2 §2): orders-worker calls
+ * postgres directly (retries: 2), with no cache on the path.
+ */
+const DEPENDENT = 'orders-worker'
 
 const pkgDir = fileURLToPath(new URL('../..', import.meta.url))
 const verifier = join(pkgDir, 'scripts', 'verify-coherence.mjs')
@@ -40,19 +46,6 @@ function run(seed: string, inputs: readonly FaultInput[] = [{ kind: KIND }], tic
 }
 
 const baseline = (seed: string, ticks = TICKS) => simulate({ system: defaultShop, seed }, ticks)
-
-const aggregate = (records: readonly TelemetryRecord[], component: string, tick: number): MetricRecord => {
-  const m = records.find((r): r is MetricRecord => r.type === 'metric' && r.component === component && r.instance === undefined && r.tick === tick)
-  if (m === undefined) throw new Error(`no aggregate metric for ${component} at ${tick}`)
-  return m
-}
-
-/** Mean of an aggregate metric over the signature window and over all seeds. */
-function windowMean(runs: readonly (readonly TelemetryRecord[])[], component: string, metric: MetricName): number {
-  let total = 0
-  for (const records of runs) for (const tick of WINDOW) total += aggregate(records, component, tick)[metric]
-  return total / (runs.length * WINDOW.length)
-}
 
 const serve = (tick: number, traceId: string, component = TARGET): ServeContext => ({
   tick,
@@ -118,8 +111,8 @@ describe('module semantics (ADR-004)', () => {
         if ((a === undefined) !== (b === undefined)) mixed += 1
       }
     }
-    expect(failed / total).toBeGreaterThan(0.35)
-    expect(failed / total).toBeLessThan(0.45)
+    expect(failed / total).toBeGreaterThan(FAIL_RATIO - 0.05)
+    expect(failed / total).toBeLessThan(FAIL_RATIO + 0.05)
     expect(mixed).toBeGreaterThan(0)
   })
 
@@ -153,32 +146,39 @@ describe('F-2 — before startTick the fault is invisible', () => {
   })
 })
 
-describe(`F-3 row 2 — signature in the window, ${SEEDS.length} seeds, defaults`, () => {
+describe(`F-3 row 2 / F-4 — ${SEEDS.length} seeds, defaults (R1–R5, E1–E4)`, () => {
   const faulted = SEEDS.map((seed) => run(seed))
   const base = SEEDS.map((seed) => baseline(seed))
+  const errorPct = (runs: readonly (readonly TelemetryRecord[])[], component: string) => runs.map((records) => windowMean(records, component, 'errorPct', WINDOW))
 
-  it('target: error-level logs in postgres in every tick of the window, in every seed', () => {
-    for (const records of faulted) {
-      for (const tick of WINDOW) {
-        expect(records.some((r): r is LogRecord => r.type === 'log' && r.component === TARGET && r.tick === tick && r.level === 'error')).toBe(true)
-      }
-    }
+  it('default failRatio is 0.7 and fillTicks 3 (ADR-004 Emenda 2 §2): the whole window is full', () => {
+    expect(FAIL_RATIO).toBe(0.7)
+    const fillTicks = faultCatalog[KIND].params['fillTicks']!.default
+    expect(fillTicks).toBe(3)
+    expect(WINDOW[0]! - START).toBeGreaterThanOrEqual(fillTicks)
   })
 
-  it('target: error % of postgres >= baseline + 10 p.p.', () => {
-    expect(windowMean(faulted, TARGET, 'errorPct')).toBeGreaterThanOrEqual(windowMean(base, TARGET, 'errorPct') + 10)
+  it('R4: error-level logs in postgres in every tick of the window, in every seed', () => {
+    assertPass(
+      everySeed(SEEDS, (_seed, i) => {
+        const missing = WINDOW.filter((tick) => !faulted[i]!.some((r) => r.type === 'log' && r.component === TARGET && r.tick === tick && r.level === 'error'))
+        return missing.length === 0 || `no error log of ${TARGET} at ticks ${missing.join(', ')}`
+      }),
+      'postgres error logs',
+    )
   })
 
-  it('indirect: error % of >= 1 service that depends on postgres >= baseline + 5 p.p.', () => {
-    const rises = DEPENDENTS.map((s) => windowMean(faulted, s, 'errorPct') - windowMean(base, s, 'errorPct'))
-    expect(Math.max(...rises)).toBeGreaterThanOrEqual(5)
+  it('R3: error % of postgres >= baseline + 10 p.p. (>= +7.5 p.p. in every seed)', () => {
+    assertPass(effect(errorPct(faulted, TARGET), errorPct(base, TARGET), { ppAtLeast: 10 }, SEEDS), 'postgres error %')
   })
 
-  it('F-4: a metric of a component other than the target deviates >= 25% from the baseline', () => {
-    // payment never errors in the baseline, so the deviation is also checked in absolute terms.
-    const err = { base: windowMean(base, 'payment', 'errorPct'), fault: windowMean(faulted, 'payment', 'errorPct') }
-    expect(err.fault).toBeGreaterThanOrEqual(1.25 * err.base)
-    expect(err.fault - err.base).toBeGreaterThanOrEqual(5)
+  it(`R3: error % of the fixed dependent ${DEPENDENT} >= baseline + 5 p.p. (>= +3.75 p.p. in every seed)`, () => {
+    assertPass(effect(errorPct(faulted, DEPENDENT), errorPct(base, DEPENDENT), { ppAtLeast: 5 }, SEEDS), `${DEPENDENT} error %`)
+  })
+
+  it(`F-4: fixed eligible pair (${DEPENDENT}, errorPct), in every seed (E1–E4)`, () => {
+    const r = assertEligibleF4({ component: DEPENDENT, metric: 'errorPct' }, base, faulted, TARGET, { window: WINDOW, seeds: SEEDS })
+    expect(r.direction).toBe('rise')
   })
 
   it('callers log the symptom (`upstream error`, `dependency call failed`), never the disk message', () => {

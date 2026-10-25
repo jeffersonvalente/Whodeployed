@@ -54,7 +54,9 @@ export const faultCatalog: FaultCatalog = {
         description: 'Ticks of high disk usage warnings before requests start failing.',
       },
       failRatio: {
-        default: 0.4,
+        // 0.7 (ADR-004 Emenda 2 §2, T1.36): smallest value of {0.6, 0.7, 0.8, 0.9} whose worst seed
+        // keeps orders-worker error % >= +5.6 p.p. (1.5x the R3 floor) in the window.
+        default: 0.7,
         min: 0.05,
         max: 1,
         integer: false,
