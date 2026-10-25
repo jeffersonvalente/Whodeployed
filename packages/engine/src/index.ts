@@ -2,8 +2,10 @@
  * Public API of @whodeployed/engine (ADR-002 §2).
  *
  * Re-exports sections 1–7 of types.ts (section 8, the internal SPI, and section 9, the CLI,
- * stay private) plus the public runtime values. Created by T1.1; only T1.15 edits it after
- * that, adding createSimulation, simulate, serializeRecord, resolveFaults and EngineError.
+ * stay private) plus the public runtime values. Created by T1.1; edited by T1.15, which added
+ * the simulation API (createSimulation, simulate), the canonical serializer (serializeRecord,
+ * toNdjson), fault resolution (resolveFaults), the error class (EngineError, isEngineError) and
+ * the default system (defaultShop), so a library user can run a simulation without writing one.
  */
 
 // 1. Central contract — SPEC §6
@@ -85,4 +87,9 @@ export type {
 export type { EngineErrorCode, EngineErrorInfo } from './types.js'
 
 // Runtime values
+export { createSimulation, simulate } from './sim/simulation.js'
+export { serializeRecord, toNdjson } from './sim/serialize.js'
 export { faultCatalog, faultKinds } from './faults/catalog.js'
+export { resolveFaults } from './faults/resolve.js'
+export { EngineError, isEngineError } from './errors.js'
+export { defaultShop } from './world/default-shop.js'
