@@ -61,3 +61,12 @@ Esta ADR **não** escolhe canal, nome definitivo nem conta. Só PUB-4 depende de
 - **`commander` como devDependency + bundler (esbuild/tsup):** adiciona ferramenta e passo de build sem ganho funcional sobre `node:util.parseArgs`.
 - **CLI em pacote separado (`packages/engine-cli`):** o PRD pede `$ENGINE` com CLI e um só tarball (PUB-1); dois pacotes dobram empacotamento e publicação.
 - **Flag `--out <file>`:** traria `node:fs` ao CLI sem necessidade; redirecionamento do shell resolve.
+
+## Emenda 1 — 2026-10-25 (issue #24, #15, #22)
+
+Implementação de tudo abaixo: T1.23.
+
+- **Uma só classe de erro (#15):** `src/cli/args.ts` deixa de definir `CliUsageError` e lança o `EngineError` de `src/errors.ts` com `code: 'usage'`, para `instanceof EngineError` valer também nos erros de parse.
+- **Exit 2 = todo `EngineError`:** qualquer `EngineError`, de qualquer código (`usage`, `invalid_seed` — seed vazia rejeitada por `buildWorld` —, `invalid_system`, os de F-7, ...), sai com exit 2, mensagem no stderr, stdout vazio. Qualquer outro erro (invariante interna, ADR-002 §7) sai com exit 1.
+- **`params` sem protótipo (#22):** `parseFaultSpec` monta `params` com `Object.create(null)`, para que `--fault kind:__proto__=1` chegue a `resolveFaults` e falhe como `unknown_param` (ADR-004, Emenda 1). Um caso de teste.
+- **Forma dos inteiros:** `--ticks` e `startTick` aceitam inteiro decimal com sinal opcional (`/^[+-]?\d+$/`); `--ticks +5` é 5 e `--ticks 007` é 7. Isso não afeta determinismo (o valor é o mesmo) e é a mesma regra de `startTick`; a faixa `1..100000` continua valendo. Não muda.

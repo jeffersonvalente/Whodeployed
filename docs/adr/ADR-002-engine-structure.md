@@ -114,3 +114,31 @@ IDs de instância: `${component}-${index}` (ex.: `payment-0`), estáveis por def
 - **Um arquivo por módulo, como em SPEC §6 literal:** seis falhas e seis perguntas no mesmo arquivo gerariam conflitos de merge constantes.
 - **Falhas como `if (kind === ...)` dentro do loop de tráfego:** acopla cada falha ao núcleo e impede tarefas paralelas; hooks dão um ponto de extensão estreito.
 - **`ask()` avançando o relógio internamente:** misturaria leitura e simulação e quebraria Q-3; o custo em ticks fica no `Answer` e o jogo decide.
+
+## Emenda 1 — 2026-10-25 (issue #24, QA da onda 1 e da T1.14)
+
+Registra regras que as tarefas T1.3, T1.8 e T1.14 implementaram e que nenhuma ADR fixava. Nenhuma muda o comportamento de `main`.
+
+### 6.1 Validação do `SystemDefinition` (`buildWorld`, `invalid_system`)
+
+Além das regras da T1.3 (nome duplicado, alvo de chamada inexistente, `onMiss` fora de cache, `replicas < 1`):
+
+- **Nome de componente** casa com `^[A-Za-z0-9][A-Za-z0-9_.-]*$`. A regra exclui `:`, `,`, `=` e espaço, que são separadores do `--fault` (ADR-007), e vale também para os cenários e sistemas das fases 3–4 (o JSON Schema de `packages/scenarios` deve repetir a mesma regex).
+- **`cacheHitRatio`** é obrigatório em dependências `kind: 'cache'` (em `[0, 1]`) e proibido nas demais. O tipo em `types.ts` continua opcional; a regra é de validação.
+- **Ciclos de chamada são proibidos**, inclusive os que passam por `onMiss` (o grafo considera `calls[].target` e `calls[].onMiss.target`). O tráfego de §5 não termina num ciclo.
+
+### 3.1 Imutabilidade
+
+Registros entregues à store e o `World` exposto são imutáveis (ADR-010). O orquestrador não altera registro depois de `appendTick`, nem `world.services`/`world.deps` depois de `buildWorld`.
+
+### 5.1 Pontos da T1.14 (tráfego)
+
+- **Ingress em instância `down`:** a request de ingress roteada a uma instância fora se perde na borda, sem span, log nem erro; o sinal é a queda do RPS servido (F-3 linha 1). Fica assim nesta fase: o motor não tem telemetria do lado do usuário, e um `service_crash_loop` com alvo `gateway` se manifesta fora do alvo pela queda de RPS dos chamados (F-4). A borda não tenta a próxima instância.
+- **Ingress exato:** `ratePerTick` requests por tick, sem jitter (o RPS do gateway no baseline é uma linha de 1.2). Fica exato na fase 1, porque as assinaturas F-3/F-4 e o tamanho dos fixtures (D-3) foram dimensionados com ele. O risco de padrão decorável (SPEC §11) é real quando houver jogador: fica registrado como ponto para o PRD da fase 2 (PM), que decide se o ingress ganha variação seedada antes do protótipo. Mudar exige emenda desta ADR e regeneração de fixtures.
+- **Sorteio de hit da cache é feito mesmo quando a chamada não acontece** (por `ratio`): número fixo de sorteios por span server, intencional (ADR-003 §8). Sem efeito no `default-shop` (toda chamada a cache tem `ratio: 1`).
+
+### 7. Erros: `EngineError` × invariantes internas
+
+- `EngineError` (com `EngineErrorCode`) é **só** para entrada vinda de fora do motor: `SystemDefinition`, seed, `FaultInput`, `NoiseEvent`, `Question`, argv do CLI. É o que o CLI mapeia para exit 2 (ADR-007).
+- Violação de invariante entre módulos do motor (ex.: `appendTick` fora de ordem, `ErrorDetail` ausente ou órfão, tick negativo vindo do orquestrador) é bug, não entrada inválida: lança `Error` ou `RangeError` nativo, com mensagem prefixada pelo módulo (`TelemetryStore: ...`). Não ganha `EngineErrorCode`. O CLI trata como erro interno (exit 1).
+- O que já está em `main` (T1.2, T1.7, T1.8) segue esta regra; nada a mudar.

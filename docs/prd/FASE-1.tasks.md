@@ -3,7 +3,8 @@
 - **Autor:** Arquiteto
 - **Entrada:** `docs/prd/FASE-1.md`; SPEC §3, §4, §6; ADR-001
 - **Contrato:** `packages/engine/src/types.ts` (compila com `tsc --noEmit`, `strict: true`)
-- **ADRs desta fase:** ADR-002 (estrutura e mundo), ADR-003 (determinismo), ADR-004 (FaultKind), ADR-005 (telemetria/NDJSON/fixtures), ADR-006 (perguntas), ADR-007 (CLI e pacote), ADR-008 (qualidade e CI)
+- **ADRs desta fase:** ADR-002 (estrutura e mundo), ADR-003 (determinismo), ADR-004 (FaultKind), ADR-005 (telemetria/NDJSON/fixtures), ADR-006 (perguntas), ADR-007 (CLI e pacote), ADR-008 (qualidade e CI), ADR-010 (imutabilidade da telemetria)
+- **Emendas da onda 1 (issue #24):** ADR-002, ADR-003, ADR-004, ADR-005, ADR-006 e ADR-007 têm "Emenda 1"; as notas por tarefa estão em "Notas da onda 1" no fim deste arquivo
 
 Regras para todas as tarefas:
 
@@ -32,20 +33,23 @@ Regras para todas as tarefas:
 | T1.13 | Script verificador independente `scripts/verify-coherence.mjs` (P-1, P-2, P-3, S-3 a partir do NDJSON) | engine | motor | T1.1 | P-4, DET |
 | T1.14 | `generateTraffic`: ingress, balanceamento, árvore de chamadas, timeouts, retries, cache/onMiss, waits, hooks `onServe`/`onCall`, spans + `ErrorDetail` | engine | motor | T1.2, T1.3 | S-3, P-1 (spans completos), H4 (propagação), DET |
 | T1.15 | Orquestrador: `createSimulation`/`advance`/`simulate`, gating e composição de hooks, noise, ordem canônica, `src/index.ts` público | engine | motor | T1.2, T1.3, T1.4, T1.5, T1.6, T1.7, T1.8, T1.14 | W-3 (execução), W-4, F-2 (genérico), S-4, D-1 (biblioteca), DET |
-| T1.16 | `ask()`: validação de Question, dispatcher, tabela de `tickCost`, simulação `lastWeek` lazy; fixtures `fixtures/answers/*.json` | engine | motor | T1.9, T1.10, T1.11, T1.15 | Q-1, Q-2, Q-3, Q-10, Q-8 (seed derivada), DET |
+| T1.16 | `ask()`: validação de Question, dispatcher, tabela de `tickCost`, `QuestionContext` a partir de `AskEnvironment`, `lastWeek` lazy memoizado e ≥ `now`; nearest-rank único; teste de desempate (#21); fixtures `fixtures/answers/*.json` | engine | motor | T1.9, T1.10, T1.11, T1.15 | Q-1, Q-2, Q-3, Q-6 (desempate), Q-10, Q-8 (seed derivada), DET |
 | T1.17 | Falha `service_crash_loop` | engine | motor | T1.15 | F-1, F-2, F-3 (linha 1), F-4, DET |
 | T1.18 | Falha `disk_full` | engine | motor | T1.15 | F-1, F-2, F-3 (linha 2), F-4, DET |
 | T1.19 | Falha `connection_pool_exhaustion` | engine | motor | T1.15 | F-1, F-2, F-3 (linha 3), F-4, DET |
 | T1.20 | Falha `bad_deploy` | engine | motor | T1.15 | F-1, F-2, F-3 (linha 4), F-4, F-5, S-4 (evento de falha), DET |
 | T1.21 | Falha `slow_dependency` | engine | motor | T1.15 | F-1, F-2, F-3 (linha 5), F-4, DET |
 | T1.22 | Falha `cache_cold_start` | engine | motor | T1.15 | F-1, F-2, F-3 (linha 7), F-4, DET |
-| T1.23 | CLI `main`: comando `simulate`, NDJSON no stdout, códigos de saída, help | engine | motor | T1.5, T1.12, T1.15 | CLI-1, CLI-2, CLI-3, CLI-4, D-1, D-5, DET |
-| T1.24 | Suíte de propriedades de coerência (≥ 100 seeds × baseline + 6 kinds × 30 ticks) | engine | motor | T1.15 | P-1, P-2, P-3, S-1, S-2, S-3, W-4, DET |
+| T1.23 | CLI `main`: comando `simulate`, NDJSON no stdout, códigos de saída, help; `args.ts` com `EngineError` compartilhado (#15) e `params` sem protótipo (#22) | engine | motor | T1.5, T1.12, T1.15 | CLI-1, CLI-2, CLI-3, CLI-4, F-7 (via CLI), D-1, D-5, DET |
+| T1.24 | Suíte de propriedades de coerência (≥ 100 seeds × baseline + 6 kinds × 30 ticks), incluindo Q-6 na simulação real e chaves de `attrs` | engine | motor | T1.15 | P-1, P-2, P-3, Q-6 (simulação real), S-1, S-2, S-3, W-4, DET |
 | T1.25 | Suíte multi-falha e variação de seed | engine | motor | T1.17, T1.19 | F-6, S-5, D-1, DET |
-| T1.26 | CI do engine: `scripts/ci-engine.sh` (D-1, D-2, CLI-3, CLI-4, CLI-5, P-4) + `scripts/pack-smoke.sh` (PUB-1) + workflow | engine | motor | T1.13, T1.23 | QC-2, D-1, D-2, CLI-3, CLI-4, CLI-5, PUB-1, PUB-2 (checagem), P-4, DET |
+| T1.26 | CI do engine: `scripts/ci-engine.sh` (D-1, D-2, CLI-3, CLI-4, CLI-5, P-4) + `scripts/pack-smoke.sh` (PUB-1) + workflow; verificador rejeita `null` em opcional (ADR-005 Emenda 1) | engine | motor | T1.13, T1.23 | QC-2, D-1, D-2, CLI-3, CLI-4, CLI-5, PUB-1, PUB-2 (checagem), P-4, DET |
 | T1.27 | Fixtures de telemetria: 7 NDJSON de 60 ticks, `scripts/gen-fixtures.mjs`, teste de regeneração | engine | motor | T1.17, T1.18, T1.19, T1.20, T1.21, T1.22, T1.23 | D-3, DET |
 | T1.28 | `packages/engine/README.md`: instalação, CLI com os 6 kinds, exemplo de biblioteca com `ask()`, seed e tick | engine | motor | T1.16, T1.23 | PUB-3, DET |
 | T1.29 | Publicação no canal decidido pelo Diretor | engine | motor | T1.26, T1.27, T1.28, **B-1 (Diretor)** | PUB-4, DET |
+| T1.30 | `resolveFaults` rejeita `null` em `target`/`startTick`/`params`/`params.<nome>` (ADR-004 Emenda 1, #23) | engine | motor | T1.4 | F-7, DET |
+| T1.31 | `TelemetryStore` congela registros (e `attrs`) e `world` (ADR-010) | engine | motor | T1.8 | Q-3, DET |
+| T1.32 | Tráfego: corrigir comentário de isolamento em `traffic.ts` (ADR-003 §8) e acrescentar testes de isolamento, chave `lat` e sorteio fixo de hit da cache | engine | motor | T1.14 | S-3, F-2, DET |
 
 Não são tarefas de engenharia (registrados para o gate): **QC-3** (proteção de branch, Diretor configura), **G-1** (leitores do GATE-0, Diretor), **B-1** (canal de publicação, Diretor).
 
@@ -58,6 +62,7 @@ Não são tarefas de engenharia (registrados para o gate): **QC-3** (proteção 
 | 2 | T1.14 | T1.2 e T1.3 |
 | 3 | T1.15 | onda 1 (T1.4–T1.8) e T1.14 |
 | 4 | T1.16, T1.17, T1.18, T1.19, T1.20, T1.21, T1.22, T1.23, T1.24 | T1.15 (T1.16 também precisa de T1.9–T1.11; T1.23 de T1.5 e T1.12) |
+| 4′ | T1.30, T1.31, T1.32 | já liberadas (dependências em `main`); rodam em paralelo com T1.15 e a onda 4 e não bloqueiam nenhuma tarefa |
 | 5 | T1.25, T1.26, T1.27, T1.28 | dependências da tabela |
 | 6 | T1.29 | B-1 resolvido pelo Diretor |
 
@@ -69,9 +74,9 @@ Arquivos "novo" não existem antes; "substitui corpo" é um stub criado por T1.1
 
 | ID | Arquivos |
 | --- | --- |
-| T1.1 | `packages/engine/{package.json, tsconfig.json (edita), tsconfig.build.json, vitest.config.ts, eslint.config.js, LICENSE, README.md (stub)}`, `pnpm-lock.yaml`, `packages/engine/src/index.ts`, `src/faults/{catalog,registry}.ts`, `src/faults/{service_crash_loop,disk_full,connection_pool_exhaustion,bad_deploy,slow_dependency,cache_cold_start}.ts` (stubs no-op), `src/questions/{registry,ask,dashboard,logs,whatChanged,trace,compare,askNpc}.ts` (stubs), `test/{contract.types,boundaries,catalog}.test.ts`, `.github/workflows/ci.yml` (passo `typecheck`) |
+| T1.1 | `packages/engine/{package.json, tsconfig.json (edita), tsconfig.build.json, tsconfig.node.json, tsconfig.build.cli.json, vitest.config.ts, eslint.config.js, LICENSE, README.md (stub)}`, `package.json` da raiz (scripts `-r --if-present run` e `typecheck`), remoção de `packages/engine/src/.gitkeep`, `pnpm-lock.yaml`, `packages/engine/src/index.ts`, `src/faults/{catalog,registry}.ts`, `src/faults/{service_crash_loop,disk_full,connection_pool_exhaustion,bad_deploy,slow_dependency,cache_cold_start}.ts` (stubs no-op), `src/questions/{registry,ask,dashboard,logs,whatChanged,trace,compare,askNpc}.ts` (stubs), `test/{contract.types,boundaries,catalog}.test.ts`, `.github/workflows/ci.yml` (passo `typecheck` e correções do workflow: sem `version: 9`, `--if-present`) |
 | T1.2 | novo `src/sim/rng.ts`, `test/sim/rng.test.ts` |
-| T1.3 | novo `src/world/{default-shop,build}.ts`, `test/world/*.test.ts` |
+| T1.3 | novo `src/world/{default-shop,build}.ts`, `test/world/*.test.ts`; `src/errors.ts` (cópia idêntica à da T1.4, criada porque T1.3 não dependia de T1.4; merge trivial). Regra daqui em diante: quem precisa de `EngineError` depende de T1.4 |
 | T1.4 | novo `src/errors.ts`, `src/faults/resolve.ts`, `test/faults/resolve.test.ts`, `test/errors.test.ts` |
 | T1.5 | novo `src/sim/serialize.ts`, `test/sim/serialize.test.ts` |
 | T1.6 | novo `src/sim/metrics.ts`, `test/sim/metrics.test.ts` |
@@ -84,17 +89,20 @@ Arquivos "novo" não existem antes; "substitui corpo" é um stub criado por T1.1
 | T1.13 | novo `scripts/verify-coherence.mjs`, `test/scripts/verify-coherence.test.ts`, `test/scripts/samples/*.ndjson` (pequenos, feitos à mão) |
 | T1.14 | novo `src/sim/traffic.ts`, `test/sim/traffic.test.ts` |
 | T1.15 | novo `src/sim/{hooks,simulation}.ts`, `test/sim/{hooks,simulation}.test.ts`; edita `src/index.ts` |
-| T1.16 | substitui corpo `src/questions/ask.ts`; novo `src/questions/validate.ts`, `test/questions/{ask,validate}.test.ts`, `fixtures/answers/*.json` |
+| T1.16 | substitui corpo `src/questions/ask.ts`; novo `src/questions/validate.ts`, `test/questions/{ask,validate}.test.ts`, `fixtures/answers/*.json`; edita `src/sim/metrics.ts` (só exporta `nearestRankIndex` e a usa em `nearestRank`), `src/questions/trace.ts` (usa `nearestRankIndex`), `test/questions/trace.test.ts` (#21), `test/sim/metrics.test.ts` (casos de `nearestRankIndex`) |
 | T1.17–T1.22 | substitui corpo `src/faults/<kind>.ts`; novo `test/faults/<kind>.test.ts`; pode editar só a linha do seu kind em `src/faults/catalog.ts` e a linha correspondente na tabela de ADR-004 se ajustar default/faixa |
-| T1.23 | novo `src/cli/main.ts`, `test/cli/main.test.ts` |
+| T1.23 | novo `src/cli/main.ts`, `test/cli/main.test.ts`; edita `src/cli/args.ts` e `test/cli/args.test.ts` (#15, #22) |
 | T1.24 | novo `test/properties/coherence.test.ts` |
 | T1.25 | novo `test/properties/{multi-fault,seed-variation}.test.ts` |
-| T1.26 | novo `scripts/{ci-engine,pack-smoke}.sh`; edita `.github/workflows/ci.yml` |
+| T1.26 | novo `scripts/{ci-engine,pack-smoke}.sh`; edita `.github/workflows/ci.yml`, `scripts/verify-coherence.mjs` e `test/scripts/verify-coherence.test.ts` (+ amostra `test/scripts/samples/null-instance.ndjson`) |
 | T1.27 | novo `fixtures/{baseline,service_crash_loop,disk_full,connection_pool_exhaustion,bad_deploy,slow_dependency,cache_cold_start}.ndjson`, `scripts/gen-fixtures.mjs`, `test/fixtures.test.ts` |
 | T1.28 | edita `packages/engine/README.md` (stub criado em T1.1) |
 | T1.29 | edita `packages/engine/package.json` (só `name`/`publishConfig`, conforme B-1) |
+| T1.30 | edita `src/faults/resolve.ts`, `test/faults/resolve.test.ts` |
+| T1.31 | edita `src/sim/store.ts`, `test/sim/store.test.ts` |
+| T1.32 | edita `src/sim/traffic.ts` (só o comentário de cabeçalho sobre isolamento), `test/sim/traffic.test.ts` |
 
-Conflitos residuais conhecidos: T1.15 já chama o stub `src/questions/ask.ts` (criado em T1.1), então T1.16 não toca `simulation.ts`; T1.17–T1.22 em `catalog.ts`/ADR-004 só se ajustarem padrões, cada uma na sua linha (merge textual trivial).
+Conflitos residuais conhecidos: T1.15 já chama o stub `src/questions/ask.ts` (criado em T1.1), então T1.16 não toca `simulation.ts`; T1.16 e T1.24 não tocam os mesmos arquivos; T1.30–T1.32 não tocam arquivo de nenhuma tarefa aberta; T1.17–T1.22 em `catalog.ts`/ADR-004 só se ajustarem padrões, cada uma na sua linha (merge textual trivial).
 
 ## Critérios de aceite por tarefa
 
@@ -115,15 +123,18 @@ Todas: lint, typecheck e testes verdes; cobertura de `sim`/`faults` ≥ 80%; che
 - **T1.13** — Script sem imports de `src/` nem de pacotes; aprova amostra coerente, reprova amostras com métrica errada, percentil errado, span de erro sem log, filho maior que o pai; exit 0/1 e mensagem no stderr. DET: mesma entrada ⇒ mesma saída do script.
 - **T1.14** — Num mundo mínimo e no `default-shop`: uma raiz por trace, filho ≤ pai (S-3), retries até `retries`, timeout corta o servidor com `ok`, miss de cache segue `onMiss`, instância down ⇒ `client` com erro e sem `server`, hooks aplicados (teste com hooks falsos), um `ErrorDetail` por span com erro; ingress do `default-shop` gera ≈ 12 traces/tick. DET: mesma `RngFactory` ⇒ mesmos spans; hooks falsos não alteram streams de tráfego que não usam.
 - **T1.15** — `createSimulation` simula o tick 0; `advance` acumula; `simulate(cfg, n)` = ticks `[0, n)`; ordem canônica de ADR-005; W-3 (mundo mínimo, 30 ticks, só seus componentes na telemetria); F-2 com um `FaultModule` de teste; S-4 (2 noises: telemetria sem eventos é byte-idêntica à sem noise); composição de hooks pelas regras de ADR-002 §4. DET: duas execuções em processo ⇒ NDJSON idêntico.
-- **T1.16** — Q-1 (6 kinds num mundo recém-criado, nenhum parâmetro de nível), Q-2 (eco profundo da `question`, `tickCost` = tabela da ADR-006), Q-3 (20 perguntas de PRNG de teste intercaladas em 60 ticks: NDJSON idêntico ao sem perguntas; mesma pergunta no mesmo tick ⇒ `Answer` igual), Q-10 (um caso por erro). `lastWeek` = `simulate` com seed `${seed}:lastWeek` (Q-8). Fixtures `fixtures/answers/<kind>.json` (baseline, seed `fixture`, tick 30) com teste de regeneração. DET: os testes acima.
+- **T1.16** — `QuestionContext` montado do `AskEnvironment`, com `lastWeek` memoizado por ambiente e simulado até ≥ `view.now` (ADR-006 Emenda 1: teste que pergunta `compare by lastWeek` no tick 5, avança a execução e pergunta no tick 40, conferindo que a série `lastWeek` cobre a janela inteira e que só uma simulação `lastWeek` foi criada); nearest-rank único (`trace.ts` importa `nearestRankIndex` de `metrics.ts`); #21: teste com `x=20, y=20, a=10, w=30` em ordem de geração, p50 ⇒ `focusSpanId` de `x` (a mutação do comparador de desempate tem que falhar); Q-3 também sobre o `Answer`: escrever em `answer.data.records[0]` lança `TypeError` quando a T1.31 estiver em `main` (antes disso, o teste fica `todo`). Q-1 (6 kinds num mundo recém-criado, nenhum parâmetro de nível), Q-2 (eco profundo da `question`, `tickCost` = tabela da ADR-006), Q-3 (20 perguntas de PRNG de teste intercaladas em 60 ticks: NDJSON idêntico ao sem perguntas; mesma pergunta no mesmo tick ⇒ `Answer` igual), Q-10 (um caso por erro). `lastWeek` = `simulate` com seed `${seed}:lastWeek` (Q-8). Fixtures `fixtures/answers/<kind>.json` (baseline, seed `fixture`, tick 30) com teste de regeneração. DET: os testes acima.
 - **T1.17–T1.22** (cada uma no seu kind) — Linha correspondente da tabela "Assinaturas de falha" do PRD (F-3) sobre ≥ 10 seeds, na janela de assinatura, com defaults; F-4 (componente ≠ alvo desvia ≥ 25%) sobre ≥ 10 seeds; F-2 (ticks < `startTick` byte-idênticos ao baseline); semântica da ADR-004; T1.20 também F-5 sobre ≥ 10 seeds e evento `deploy` com `instance` no `startTick`; T1.22 evento `config` com `restart: true` no `startTick`. DET: duas execuções do kind ⇒ NDJSON idêntico; seeds diferentes ⇒ instância/fase afetada pode mudar (onde aplicável).
-- **T1.23** — CLI-1 (baseline 10 ticks: toda linha JSON com `type` ∈ {metric, log, span, event}, exit 0), CLI-2 (6 kinds com padrão, uma sobrescrita, duas falhas: exit 0), CLI-3 (kind inválido lista os 6; `--seed` ausente; `--ticks` inválido; alvo inexistente: exit 2, stderr não vazio, stdout vazio), CLI-4; só `node:util`/`node:process` + biblioteca (D-5). DET: duas execuções em processos separados (`spawnSync`) ⇒ mesmo SHA-256.
-- **T1.24** — P-1, P-2, P-3 sobre ≥ 100 seeds × (baseline + 6 kinds) × 30 ticks; S-1 (8 métricas para todo componente × instância × tick), S-2 (formato), S-3 (árvores), W-4 (tick inteiro em `[0, ticks)`). Tempo da suíte ≤ 60 s no CI. DET: seeds geradas por PRNG do teste com seed fixa.
+- **T1.23** — `args.ts` lança o `EngineError` de `src/errors.ts` (sem `CliUsageError`; `instanceof EngineError` nos testes do parser, #15); `--fault bad_deploy:__proto__=1` ⇒ exit 2 com `unknown_param` (#22); `--seed ''` ⇒ exit 2 (`invalid_seed`); todo `EngineError` ⇒ exit 2, outro erro ⇒ exit 1 (ADR-007 Emenda 1). CLI-1 (baseline 10 ticks: toda linha JSON com `type` ∈ {metric, log, span, event}, exit 0), CLI-2 (6 kinds com padrão, uma sobrescrita, duas falhas: exit 0), CLI-3 (kind inválido lista os 6; `--seed` ausente; `--ticks` inválido; alvo inexistente: exit 2, stderr não vazio, stdout vazio), CLI-4; só `node:util`/`node:process` + biblioteca (D-5). DET: duas execuções em processos separados (`spawnSync`) ⇒ mesmo SHA-256.
+- **T1.24** — P-1, P-2, P-3 sobre ≥ 100 seeds × (baseline + 6 kinds) × 30 ticks; S-1 (8 métricas para todo componente × instância × tick), S-2 (formato), S-3 (árvores), W-4 (tick inteiro em `[0, ticks)`); Q-6 na simulação real: para cada seed × (baseline + 6 kinds), avançando tick a tick, todo componente e p ∈ {50, 95, 99}, a duração do span de foco do handler `trace` é igual ao pXX do agregado (sem `instance`) no mesmo tick (≥ 10 seeds bastam para esta parte); chaves de `attrs` de todo log casam com `^[A-Za-z_][A-Za-z0-9_]*$` e `message` pertence ao vocabulário fechado (ADR-005 Emenda 1). Tempo da suíte ≤ 60 s no CI. DET: seeds geradas por PRNG do teste com seed fixa.
 - **T1.25** — F-6: duas falhas de kinds diferentes em alvos diferentes (`connection_pool_exhaustion` em `payment` + `service_crash_loop` em `catalog`): ambas as assinaturas F-3 aparecem; S-5: 10 pares de seeds com a mesma falha ⇒ hashes diferentes e ≥ 1 métrica diferente. DET: a execução com duas falhas é byte-idêntica entre duas rodadas.
-- **T1.26** — Workflow roda lint, typecheck, test+coverage, build e `scripts/ci-engine.sh` (D-1 por baseline + 6 kinds, D-2, CLI-3, CLI-4, CLI-5 com `timeout 10` e 360 ticks, P-4 com `verify-coherence.mjs` sobre os 6 kinds a 60 ticks) e `scripts/pack-smoke.sh` (PUB-1 com Node 22; lista do tarball conforme PUB-2). Um passo vermelho deixa o check vermelho (QC-2). DET: D-1/D-2 no CI.
+- **T1.26** — Workflow roda lint, typecheck, test+coverage, build e `scripts/ci-engine.sh` (D-1 por baseline + 6 kinds, D-2, CLI-3, CLI-4, CLI-5 com `timeout 10` e 360 ticks, P-4 com `verify-coherence.mjs` sobre os 6 kinds a 60 ticks) e `scripts/pack-smoke.sh` (PUB-1 com Node 22; lista do tarball conforme PUB-2). Um passo vermelho deixa o check vermelho (QC-2). O verificador sai 1 com campo opcional `null` (amostra nova) e mantém exit 2 para uso/leitura (ADR-005 Emenda 1). DET: D-1/D-2 no CI.
 - **T1.27** — `ls packages/engine/fixtures/*.ndjson` = 7 arquivos de 60 ticks, cada um ≤ 2 MB, gerados pelos comandos da ADR-005; `test/fixtures.test.ts` regenera em memória e compara byte a byte (D-3). DET: o teste de regeneração.
 - **T1.28** — README em inglês com instalação (tarball local e, quando B-1 resolver, canal), uso do CLI com os 6 kinds, exemplo de biblioteca com `createSimulation` + `ask()`, explicação de seed e tick; todo bloco de comando roda verbatim com exit 0 (PUB-3). DET: o README mostra que repetir o comando dá o mesmo hash.
 - **T1.29** — Bloqueada por B-1. Roteiro de PUB-1 a partir do canal publicado, saída idêntica (PUB-4). DET: hash igual ao do `$CLI`.
+- **T1.30** — Os 4 casos da tabela "Entrada ausente vs `null`" da ADR-004 lançam `EngineError` com o `code`, o `field` e os `validValues` da tabela; chave ausente e `undefined` continuam recebendo o default; os testes existentes de F-7 seguem verdes. DET: mesma entrada ⇒ mesmo `Fault[]` ou mesmo erro (`toJSON` igual).
+- **T1.31** — Depois de `appendTick`, `Object.isFrozen` vale para todo registro, para o `attrs` de cada log, para `world`, `world.services`, `world.deps` e cada componente; escrever num registro devolvido por qualquer consulta lança `TypeError` e não altera `all()`; `store.world.tick = 42` lança e `now` não muda; `world` troca de snapshot a cada `appendTick`, com o `tick` novo. Testes existentes seguem verdes. DET: duas lojas com os mesmos appends dão `all()` igual (`toStrictEqual`).
+- **T1.32** — O comentário de `traffic.ts` diz o que ADR-003 §8 garante (isolamento por tick e por trace, não por componente); o teste `fake hooks do not alter traffic streams…` passa a usar um alvo que não é a última chamada do gateway (ex.: `catalog`) e afirma o que vale (ticks sem falha idênticos; traces do tick podem trocar de instância); teste novo mata a mutação `rng('lat', traceId)` sem `spanSeq`; teste novo fixa o número de sorteios de `('traffic', tick, component)` por span server num mundo com chamada a cache de `ratio < 1`. Nenhuma linha de código de `traffic.ts` muda além do comentário. DET: os testes acima, com seed fixa.
 
 ## Rastreabilidade PRD → tarefas
 
@@ -138,19 +149,21 @@ Todas: lint, typecheck e testes verdes; cobertura de `sim`/`faults` ≥ 80%; che
 | F-3, F-4 | T1.17–T1.22 |
 | F-5 | T1.20 |
 | F-6 | T1.15 (composição), T1.25 |
-| F-7 | T1.4 |
+| F-7 | T1.4, T1.30 (`null`), T1.23 (`__proto__` via CLI) |
 | S-1 | T1.6, T1.24 |
 | S-2 | T1.7, T1.24 |
-| S-3 | T1.14, T1.24 |
+| S-3 | T1.14, T1.24, T1.32 |
 | S-4 | T1.15, T1.20 |
 | S-5 | T1.1 (grep), T1.25 |
 | P-1, P-2 | T1.6, T1.24 |
 | P-3 | T1.7, T1.24 |
 | P-4 | T1.13, T1.26 |
 | Q-1 | T1.1 (grep), T1.16 |
-| Q-2, Q-3, Q-10 | T1.16 |
+| Q-2, Q-10 | T1.16 |
+| Q-3 | T1.16, T1.31 (imutabilidade) |
 | Q-4, Q-5, Q-7 | T1.9 |
-| Q-6, Q-8 | T1.10 (Q-8 seed: T1.16) |
+| Q-6 | T1.10 (views de teste), T1.16 (desempate e nearest-rank único), T1.24 (simulação real × 6 kinds) |
+| Q-8 | T1.10 (seed: T1.16) |
 | Q-9 | T1.11 |
 | D-1 | T1.2, T1.5, T1.15, T1.23, T1.25, T1.26 |
 | D-2 | T1.2, T1.5, T1.26 |
@@ -178,6 +191,18 @@ Todas: lint, typecheck e testes verdes; cobertura de `sim`/`faults` ≥ 80%; che
 | 5 | Mitigar é válido sem root cause | Efeito das `Action`s está fora da fase 1 (PRD); `Action` existe no contrato (T1.1, CT-1). Nenhuma tarefa impede mitigação futura. |
 | 6 | Web-first, zero instalação | Biblioteca sem imports externos nem built-ins (CT-3, T1.1); `dependencies` vazio (ADR-007); nenhuma tarefa cria backend, rede ou I/O; CLI só stdout/stderr. |
 | 7 | Conteúdo é dado | `SystemDefinition`, `Fault[]` e `NoiseEvent[]` são entrada (T1.3, T1.15, W-3); parâmetros de falha em catálogo de dados (T1.1); nenhum texto de cenário no motor. |
-| 8 | Escopo pequeno e público | 29 tarefas ≤ 1 dia; o motor sozinho é release (PUB-1..PUB-3 sem depender de B-1). |
+| 8 | Escopo pequeno e público | 32 tarefas ≤ 1 dia (T1.30–T1.32 cabem em meio dia); o motor sozinho é release (PUB-1..PUB-3 sem depender de B-1). |
 
 Escopo SPEC §4: só o sistema `default-shop` com os 9 componentes (T1.3); só as 8 métricas, logs, traces simplificados e eventos de deploy/config (T1.5–T1.7, ADR-005); nada de SLO, OTel/OTLP, alertas, UI, i18n, Grafana/Datadog, backend ou telemetria do jogador. `packages/scenarios` e `apps/web` não são tocados nesta fase (fixtures em `packages/engine/fixtures/` já atendem a UI futura).
+
+## Notas da onda 1 (issue #24)
+
+Decisões do Arquiteto sobre os pontos não bloqueantes do QA da onda 1 e da T1.14. A decisão está na ADR citada; aqui fica o que cada tarefa aberta precisa saber.
+
+- **T1.15 (orquestrador, em andamento):** nada muda no que ela entrega, e ela continua sem tocar `types.ts`. Três regras passam a valer (ADR-010 §4, ADR-002 Emenda 1): (1) um registro entregue a `appendTick` não é alterado depois, nem pelo orquestrador; (2) `world.services`/`world.deps` não são alterados depois de `buildWorld` (a T1.31 vai congelá-los); (3) o `AskEnvironment` passado a `ask()` é um objeto por `Simulation`, o mesmo em toda chamada, com a view viva. A mudança de `types.ts` deste PR só torna `readonly` os registros devolvidos por `TelemetryView` (`Readonly<T>[]`); código que lê a view compila igual. Se a T1.15 atribuir um registro lido da view a uma variável e escrever nele, isso agora é erro de compilação, e é o que se quer.
+- **T1.16 (`ask()`):** monta `QuestionContext` a partir de `AskEnvironment` e memoiza `lastWeek` por ambiente, simulada até ≥ `now` (ADR-006 Emenda 1); unifica o nearest-rank (`nearestRankIndex` em `metrics.ts`); corrige o teste de desempate (#21). Os arquivos a mais estão na tabela "Arquivos tocados".
+- **T1.17–T1.22 (falhas):** F-3/F-4/F-5 comparam médias na janela de assinatura sobre ≥ 10 seeds, nunca igualdade de trace ou de instância contra o baseline nos ticks com falha: o LB compartilhado faz traces que não tocam o alvo trocarem de instância (ADR-003 §8). Chaves de `attrs` seguem `^[A-Za-z_][A-Za-z0-9_]*$` e mensagens ficam no vocabulário fechado da ADR-005 Emenda 1 (mensagem nova = emenda no mesmo PR). Nenhuma task nova bloqueia estas.
+- **T1.23 (CLI `main`):** troca `CliUsageError` pelo `EngineError` compartilhado (#15), monta `params` com `Object.create(null)` (#22), mapeia todo `EngineError` (incluindo `invalid_seed`) para exit 2. `--ticks +5` continua aceito como 5 (ADR-007 Emenda 1).
+- **T1.24 (propriedades):** acrescenta Q-6 na simulação real × 6 kinds e a checagem de chaves de `attrs` e do vocabulário de mensagens.
+- **T1.26 (CI):** o verificador passa a recusar `null` em campo opcional; exit 2 para uso/leitura fica registrado (ADR-005 Emenda 1).
+- **Fase 2 (PM):** ingress sem jitter (RPS do gateway plano) fica registrado como risco de padrão decorável (SPEC §11) para o PRD da fase 2 decidir (ADR-002 Emenda 1, §5.1). A redação de D-3 ("7 arquivos em `fixtures/`" e `fixtures/answers/`) é do PM; o Arquiteto não alterou o PRD.
