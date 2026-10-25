@@ -14,7 +14,7 @@ const ADR_004: Record<
 > = {
   service_crash_loop: [1, 'catalog', 'service', {
     uptimeTicks: [1, 1, 30, true, 'ticks'],
-    restartTicks: [2, 1, 30, true, 'ticks'],
+    restartTicks: [3, 1, 30, true, 'ticks'],
   }],
   disk_full: [2, 'postgres', 'database', {
     fillTicks: [3, 0, 30, true, 'ticks'],
