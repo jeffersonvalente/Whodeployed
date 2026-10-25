@@ -464,9 +464,15 @@ describe('F-2 — gating by startTick with a test FaultModule', () => {
     expect(records.some((r) => r.type === 'log' && r.level === 'error' && r.message === 'connection refused')).toBe(true)
   })
 
-  it('the real registry is the default (no-op stubs today: faulted run = baseline)', () => {
-    const real = resolveFaults([{ kind: 'disk_full' }], buildWorld(defaultShop, 'x'))
-    expect(ndjson(simulate({ system: defaultShop, seed: 'stub', faults: real }, 8))).toBe(ndjson(simulate({ system: defaultShop, seed: 'stub' }, 8)))
+  it('the real registry is the default (createSimulation = createSimulationWith the faultRegistry)', () => {
+    // Compared against an explicit faultRegistry run rather than against the baseline, so the test
+    // does not depend on which fault modules are still no-op stubs (T1.18 made disk_full real).
+    const real = resolveFaults([{ kind: 'disk_full', startTick: 2 }], buildWorld(defaultShop, 'x'))
+    const cfg = { system: defaultShop, seed: 'stub', faults: real }
+    const explicit = createSimulationWith(cfg, { registry: faultRegistry })
+    explicit.advance(7)
+    expect(ndjson(simulate(cfg, 8))).toBe(ndjson(explicit.telemetry().all()))
+    expect(ndjson(simulate(cfg, 8))).not.toBe(ndjson(simulate({ system: defaultShop, seed: 'stub' }, 8)))
   })
 })
 
