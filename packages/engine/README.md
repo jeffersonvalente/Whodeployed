@@ -78,17 +78,17 @@ To save the output, redirect stdout; there is no output-file flag.
 
 ### The 6 fault kinds
 
-| Kind | What fails | Default target |
-| --- | --- | --- |
-| `service_crash_loop` | Every instance of a service alternates between up and down. | `catalog` |
-| `disk_full` | A database fills its disk; then writes fail. | `postgres` |
-| `connection_pool_exhaustion` | A service leaks database connections until its pool runs out and callers wait. | `payment` |
-| `bad_deploy` | A bad version is deployed to some instances (1 of 3 by default); their requests fail. | `gateway` |
-| `slow_dependency` | A component becomes slow; its callers time out and retry, and a retry storm follows. | `postgres` |
-| `cache_cold_start` | A cache restarts empty; misses fall through to the database until it warms up. | `redis` |
+| Kind | What fails |
+| --- | --- |
+| `service_crash_loop` | Every instance of a service alternates between up and down. |
+| `disk_full` | A database fills its disk; then writes fail. |
+| `connection_pool_exhaustion` | A service leaks database connections until its pool runs out and callers wait. |
+| `bad_deploy` | A bad version is deployed to some instances; their requests fail. |
+| `slow_dependency` | A component becomes slow; its callers time out and retry, and a retry storm follows. |
+| `cache_cold_start` | A cache restarts empty; misses fall through to the database until it warms up. |
 
-Every kind starts at tick 10 by default. `whodeployed-engine --help` lists each kind with its
-default target, start tick and parameters, with their ranges.
+The defaults are not repeated here, because they can change: `whodeployed-engine --help`
+lists each kind with its default target, start tick and parameters, with their ranges.
 
 Each kind with its defaults, 60 ticks (10 minutes), counting the lines written:
 
