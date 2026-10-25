@@ -1,0 +1,22 @@
+{"type":"event","tick":0,"kind":"deploy","target":"api","instance":"api-1"}
+{"type":"span","tick":0,"traceId":"t0r0","spanId":"t0r0s0","component":"api","instance":"api-0","operation":"http.request","kind":"server","startMs":0,"durationMs":20,"status":"ok"}
+{"type":"span","tick":0,"traceId":"t0r0","spanId":"t0r0s1","parentId":"t0r0s0","component":"api","instance":"api-0","operation":"db.query","kind":"client","peer":"db","startMs":2,"durationMs":10,"status":"ok"}
+{"type":"span","tick":0,"traceId":"t0r0","spanId":"t0r0s2","parentId":"t0r0s1","component":"db","instance":"db-0","operation":"db.query","kind":"server","startMs":3,"durationMs":8,"status":"ok"}
+{"type":"span","tick":0,"traceId":"t0r1","spanId":"t0r1s0","component":"api","instance":"api-1","operation":"http.request","kind":"server","startMs":0,"durationMs":30,"status":"error"}
+{"type":"span","tick":0,"traceId":"t0r1","spanId":"t0r1s1","parentId":"t0r1s0","component":"api","instance":"api-1","operation":"db.query","kind":"client","peer":"db","startMs":1,"durationMs":25,"status":"error"}
+{"type":"span","tick":0,"traceId":"t0r1","spanId":"t0r1s2","parentId":"t0r1s1","component":"db","instance":"db-0","operation":"db.query","kind":"server","startMs":2,"durationMs":5,"status":"ok"}
+{"type":"span","tick":0,"traceId":"t0r2","spanId":"t0r2s0","component":"api","instance":"api-0","operation":"http.request","kind":"server","startMs":0,"durationMs":40,"status":"ok"}
+{"type":"log","tick":0,"component":"api","instance":"api-1","level":"error","message":"upstream timeout","traceId":"t0r1","attrs":{"peer":"db"}}
+{"type":"log","tick":0,"component":"api","instance":"api-1","level":"error","message":"request failed","traceId":"t0r1"}
+{"type":"log","tick":0,"component":"api","instance":"api-0","level":"info","message":"request served","traceId":"t0r2"}
+{"type":"metric","tick":0,"component":"api","instance":"api-0","rps":0.2,"p50":20,"p95":40,"p99":40,"errorPct":0,"cpu":5.6,"mem":256,"connections":1}
+{"type":"metric","tick":0,"component":"api","instance":"api-1","rps":0.1,"p50":30,"p95":30,"p99":30,"errorPct":100,"cpu":4.8,"mem":256.3,"connections":1}
+{"type":"metric","tick":0,"component":"api","rps":0.3,"p50":25,"p95":40,"p99":40,"errorPct":33.33333333333333,"cpu":5.2,"mem":512.3,"connections":2}
+{"type":"metric","tick":0,"component":"db","instance":"db-0","rps":0.2,"p50":5,"p95":8,"p99":8,"errorPct":0,"cpu":10.6,"mem":2048,"connections":2}
+{"type":"metric","tick":0,"component":"db","rps":0.2,"p50":5,"p95":8,"p99":8,"errorPct":0,"cpu":10.6,"mem":2048,"connections":2}
+{"type":"span","tick":1,"traceId":"t1r0","spanId":"t1r0s0","component":"api","instance":"api-0","operation":"http.request","kind":"server","startMs":0,"durationMs":12,"status":"ok"}
+{"type":"metric","tick":1,"component":"api","instance":"api-0","rps":0.1,"p50":12,"p95":12,"p99":12,"errorPct":0,"cpu":4.8,"mem":256,"connections":0}
+{"type":"metric","tick":1,"component":"api","instance":"api-1","rps":0,"p50":0,"p95":0,"p99":0,"errorPct":0,"cpu":4,"mem":256.1,"connections":0}
+{"type":"metric","tick":1,"component":"api","rps":0.1,"p50":12,"p95":12,"p99":12,"errorPct":0,"cpu":4.4,"mem":512.1,"connections":0}
+{"type":"metric","tick":1,"component":"db","instance":"db-0","rps":0,"p50":0,"p95":0,"p99":0,"errorPct":0,"cpu":10,"mem":2048,"connections":0}
+{"type":"metric","tick":1,"component":"db","rps":0,"p50":0,"p95":0,"p99":0,"errorPct":0,"cpu":10,"mem":2048,"connections":0}
