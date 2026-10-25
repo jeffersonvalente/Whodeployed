@@ -3,6 +3,7 @@
  * Queries return exactly the expected records in insertion order; windows are closed;
  * traceOf is complete; appendTick rejects out-of-order ticks; reads are pure (Q-3 base);
  * DET: two stores fed the same appends expose identical all().
+ * T1.31 — records (and log attrs) and world are frozen after appendTick (ADR-010).
  */
 import { createHash } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
@@ -97,7 +98,7 @@ const log = (tick: number, component: string, instance: string, traceId?: string
   instance,
   level: 'info',
   message: 'request served',
-  ...(traceId === undefined ? {} : { traceId }),
+  ...(traceId === undefined ? { attrs: { pool: 'main', usagePct: 42 } } : { traceId }),
 })
 
 const event = (tick: number, target: string, note?: string): EventRecord => ({
@@ -334,5 +335,122 @@ describe('createTelemetryStore — determinism (DET)', () => {
     b.appendTick(1, tickRecords(1))
     b.appendTick(2, tickRecords(2).slice(1))
     expect(hashOf(a)).not.toBe(hashOf(b))
+  })
+})
+
+describe('createTelemetryStore — immutability (T1.31, ADR-010)', () => {
+  const isLog = (r: Readonly<TelemetryRecord>): r is Readonly<LogRecord> => r.type === 'log'
+
+  it('freezes every appended record and the attrs of every log', () => {
+    const { store } = filledStore(4)
+    const all = store.all()
+    expect(all.length).toBeGreaterThan(0)
+    for (const record of all) expect(Object.isFrozen(record)).toBe(true)
+    const withAttrs = all.filter(isLog).filter((r) => r.attrs !== undefined)
+    expect(withAttrs).toHaveLength(4)
+    for (const record of withAttrs) expect(Object.isFrozen(record.attrs)).toBe(true)
+  })
+
+  it('freezes the records handed to appendTick, but not the array that carried them', () => {
+    const store = createTelemetryStore(makeWorld())
+    const records = tickRecords(0)
+    store.appendTick(0, records)
+    expect(Object.isFrozen(records)).toBe(false)
+    for (const record of records) expect(Object.isFrozen(record)).toBe(true)
+    // Shared, not copied (ADR-010 §3).
+    expect(store.all()[0]).toBe(records[0])
+  })
+
+  it('does not freeze anything of a rejected tick', () => {
+    const store = createTelemetryStore(makeWorld())
+    const records = [...tickRecords(0), metric(1, 'api')]
+    expect(() => store.appendTick(0, records)).toThrow(RangeError)
+    for (const record of records) expect(Object.isFrozen(record)).toBe(false)
+  })
+
+  it('deep-freezes world, world.services, world.deps and every component', () => {
+    const world = makeWorld()
+    const store = createTelemetryStore(world)
+    const check = (view: Readonly<World>) => {
+      expect(Object.isFrozen(view)).toBe(true)
+      expect(Object.isFrozen(view.services)).toBe(true)
+      expect(Object.isFrozen(view.deps)).toBe(true)
+      for (const component of [...view.services, ...view.deps]) {
+        expect(Object.isFrozen(component)).toBe(true)
+        expect(Object.isFrozen(component.instances)).toBe(true)
+      }
+      for (const service of view.services) {
+        expect(Object.isFrozen(service.calls)).toBe(true)
+        for (const call of service.calls) expect(Object.isFrozen(call)).toBe(true)
+        expect(Object.isFrozen(service.ingress)).toBe(true)
+      }
+    }
+    check(store.world)
+    store.appendTick(0, tickRecords(0))
+    check(store.world)
+    // The caller's own World object is not frozen; only the shared definition is.
+    expect(Object.isFrozen(world)).toBe(false)
+  })
+
+  it('a write to a record returned by any query throws TypeError and does not change all()', () => {
+    const { store, flat } = filledStore(4)
+    const before = hashOf(store)
+    const dbAttrs = () => (store.logsOf('db', 1, 1)[0] as LogRecord).attrs as Record<string, string | number>
+    const writes: (() => unknown)[] = [
+      () => ((store.metricsOf('api', 0, 0)[0] as MetricRecord).rps = 999),
+      () => ((store.logsOf('api', 0, 0)[0] as LogRecord).message = 'tampered'),
+      () => (dbAttrs()['usagePct'] = 100),
+      () => (dbAttrs()['extra'] = 'x'),
+      () => ((store.spansOf('api', 1)[0] as SpanRecord).durationMs = 1),
+      () => ((store.traceOf('t2r0')[1] as SpanRecord).status = 'error'),
+      () => ((store.eventsIn(0, 0)[0] as EventRecord).note = 'tampered'),
+      () => ((store.all()[0] as TelemetryRecord).tick = 99),
+      () => delete (store.all()[3] as SpanRecord).parentId,
+    ]
+    for (const write of writes) expect(write).toThrow(TypeError)
+    expect(hashOf(store)).toBe(before)
+    expect(store.all()).toEqual(flat)
+  })
+
+  it('store.world.tick = 42 throws and now does not change', () => {
+    const { store } = filledStore(3)
+    expect(() => ((store.world as World).tick = 42)).toThrow(TypeError)
+    expect(store.now).toBe(2)
+    expect(store.world.tick).toBe(2)
+    const service = store.world.services[0] as World['services'][number]
+    const dep = store.world.deps[0] as World['deps'][number]
+    expect(() => (store.world as World).services.push(service)).toThrow(TypeError)
+    expect(() => (service.replicas = 9)).toThrow(TypeError)
+    expect(() => dep.instances.push('db-1')).toThrow(TypeError)
+    expect(store.world.services).toHaveLength(1)
+    expect(store.world.services[0]?.replicas).toBe(2)
+    expect(store.world.deps[0]?.instances).toEqual(['db-0'])
+  })
+
+  it('replaces the world snapshot on every appendTick, with the new tick', () => {
+    const store = createTelemetryStore(makeWorld())
+    const snapshots: Readonly<World>[] = [store.world]
+    for (let tick = 0; tick < 3; tick++) {
+      store.appendTick(tick, tickRecords(tick))
+      snapshots.push(store.world)
+    }
+    expect(new Set(snapshots).size).toBe(snapshots.length)
+    expect(snapshots.map((w) => w.tick)).toEqual([0, 0, 1, 2])
+    for (const w of snapshots) {
+      expect(Object.isFrozen(w)).toBe(true)
+      expect(w.seed).toBe('store-test')
+      expect(w.services).toBe(snapshots[0]?.services)
+      expect(w.deps).toBe(snapshots[0]?.deps)
+    }
+    expect(Object.keys(store.world)).toEqual(['services', 'deps', 'tick', 'seed'])
+    // Between appends, reads return the same snapshot.
+    expect(store.world).toBe(store.world)
+  })
+
+  it('DET: freezing does not change the records (same JSON as unfrozen copies)', () => {
+    const { store } = filledStore(5)
+    const unfrozen = Array.from({ length: 5 }, (_, tick) => tickRecords(tick)).flat()
+    expect(store.all().map((r) => JSON.stringify(r))).toEqual(unfrozen.map((r) => JSON.stringify(r)))
+    expect(store.all()).toStrictEqual(filledStore(5).store.all())
   })
 })

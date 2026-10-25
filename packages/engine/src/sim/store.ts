@@ -7,6 +7,11 @@
  * - Ticks are contiguous: the first appended tick is `world.tick`, then +1 each time.
  * - Queries are pure reads (Q-3): they never change the store and return fresh arrays, so a
  *   caller cannot alter what later queries or `all()` see.
+ * - Immutability (ADR-010): every record handed to `appendTick` is frozen (with its `attrs`)
+ *   before it is indexed, and `world` is a frozen snapshot replaced on every appended tick; the
+ *   `services`/`deps` arrays and every object in them are deep-frozen when the store is created.
+ *   Records are shared, never copied, between the store, handlers and callers; in ESM (strict
+ *   mode) a write to any of them throws a TypeError instead of corrupting the telemetry.
  * - Windows `[from, to]` are closed on both ends and are clamped to the stored ticks.
  */
 import type {
@@ -35,6 +40,17 @@ function push<T>(map: Map<ComponentName, T[]>, key: ComponentName, value: T): vo
   else list.push(value)
 }
 
+/**
+ * Freezes `value` and every object reachable from it through own enumerable properties.
+ * Objects that are already frozen are assumed to be deep-frozen and are not walked again.
+ */
+function deepFreeze<T>(value: T): T {
+  if (typeof value !== 'object' || value === null || Object.isFrozen(value)) return value
+  Object.freeze(value)
+  for (const child of Object.values(value)) deepFreeze(child)
+  return value
+}
+
 function assertTick(value: number, name: string): void {
   if (!Number.isInteger(value) || value < 0) {
     throw new RangeError(`TelemetryStore: ${name} must be an integer >= 0, received ${JSON.stringify(value)}`)
@@ -48,8 +64,11 @@ export const createTelemetryStore: CreateTelemetryStore = (world: World): Teleme
   const buckets: TickBucket[] = []
   const records: TelemetryRecord[] = []
   const traces = new Map<string, SpanRecord[]>()
-  // Own copy, so `world.tick` can follow `now` without mutating the caller's object.
-  const snapshot: World = { ...world }
+  // The world definition is shared, not copied: nobody changes it after buildWorld (ADR-010 §4).
+  deepFreeze(world.services)
+  deepFreeze(world.deps)
+  // Own frozen snapshot, so `world.tick` can follow `now` without mutating the caller's object.
+  let snapshot: Readonly<World> = Object.freeze({ ...world })
 
   /** Buckets whose tick is in [from, to], clamped to the stored range. */
   function bucketsIn(from: number, to: number): TickBucket[] {
@@ -92,6 +111,7 @@ export const createTelemetryStore: CreateTelemetryStore = (world: World): Teleme
 
       const bucket: TickBucket = { metrics: new Map(), logs: new Map(), spans: new Map(), events: [] }
       for (const record of tickRecords) {
+        deepFreeze(record)
         switch (record.type) {
           case 'metric':
             push(bucket.metrics, record.component, record)
@@ -110,7 +130,7 @@ export const createTelemetryStore: CreateTelemetryStore = (world: World): Teleme
         records.push(record)
       }
       buckets.push(bucket)
-      snapshot.tick = tick
+      snapshot = Object.freeze({ ...snapshot, tick })
     },
 
     metricsOf(component, from, to) {
