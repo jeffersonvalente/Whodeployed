@@ -629,3 +629,62 @@ describe('public API (src/index.ts)', () => {
   })
 })
 
+describe('onResources wiring (ADR-002 §3 step 4; issue #29)', () => {
+  const START = 3
+  const seen: { tick: number; component: string; instance: string }[] = []
+  /** Fake fault: a resource effect on one instance of the target, nothing else. */
+  const resourcer: FaultModule = {
+    kind: 'slow_dependency',
+    activate(fault) {
+      return {
+        onResources: (ctx) => {
+          seen.push({ ...ctx })
+          if (ctx.component !== fault.target || ctx.instance !== `${fault.target}-1`) return undefined
+          return { cpuPctAdd: 30, memMbAdd: 100, connectionsAdd: 50, connectionsCap: 7 }
+        },
+      }
+    },
+  }
+  const withResources = { ...faultRegistry, slow_dependency: resourcer } as FaultRegistry
+  const resFaults = faultsFor(minimal, [{ kind: 'slow_dependency', target: 'core', startTick: START }])
+  const runWith = (ticks: number) => {
+    const sim = createSimulationWith({ system: minimal, seed: 'res', faults: resFaults }, { registry: withResources })
+    sim.advance(ticks - 1)
+    return [...sim.telemetry().all()]
+  }
+  type Metric = Extract<TelemetryRecord, { type: 'metric' }>
+  const metric = (records: readonly TelemetryRecord[], component: string, tick: number, instance?: string): Metric =>
+    records.find((r) => r.type === 'metric' && r.component === component && r.tick === tick && r.instance === instance) as Metric
+
+  it('is called once per instance of every component, in world order, only from startTick on', () => {
+    seen.length = 0
+    runWith(6)
+    const world = buildWorld(minimal, 'res')
+    const order = [...world.services, ...world.deps].flatMap((c) => c.instances.map((instance) => ({ component: c.name, instance })))
+    expect(seen).toEqual([START, START + 1, START + 2].flatMap((tick) => order.map((o) => ({ tick, ...o }))))
+  })
+
+  it('the returned effect reaches the metrics of that instance (and of its database), nothing else', () => {
+    const faulted = runWith(8)
+    const base = simulate({ system: minimal, seed: 'res' }, 8)
+    const spans = (rs: readonly TelemetryRecord[]) => ndjson(rs.filter((r) => r.type === 'span'))
+    expect(spans(faulted)).toBe(spans(base))
+    for (let tick = 0; tick < 8; tick++) {
+      const f = metric(faulted, 'core', tick, 'core-1')
+      const b = metric(base, 'core', tick, 'core-1')
+      if (tick < START) {
+        expect(f).toEqual(b)
+        continue
+      }
+      expect(f.cpu - b.cpu).toBeGreaterThan(29.8)
+      expect(f.cpu - b.cpu).toBeLessThan(30.2)
+      expect(f.mem - b.mem).toBeGreaterThan(99.8)
+      expect(f.mem - b.mem).toBeLessThan(100.2)
+      expect(f.connections).toBe(7)
+      expect(metric(faulted, 'ledger', tick).connections).toBe(metric(base, 'ledger', tick).connections - b.connections + 7)
+      for (const other of ['core-0', 'core-2']) expect(metric(faulted, 'core', tick, other)).toEqual(metric(base, 'core', tick, other))
+      expect(metric(faulted, 'edge', tick, 'edge-0')).toEqual(metric(base, 'edge', tick, 'edge-0'))
+    }
+  })
+})
+
