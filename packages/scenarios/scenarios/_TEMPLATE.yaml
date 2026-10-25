@@ -1,0 +1,40 @@
+# Scenario template — copy to NN-your-slug.yaml and fill in.
+# Full format and rules: SPEC.md §7. One fault, one lesson. Anonymize everything.
+# Fields marked (required) must be present or `pnpm validate` fails.
+
+id: 00-template                      # (required) NN-kebab-slug, NN = order in the campaign
+title: "Short, alert-like title"     # (required) what the player sees on the incident card
+level: junior                        # (required) junior | pleno | senior
+teaches: "One sentence. The single thing the player should know afterwards."   # (required)
+trap: "The misleading signal this scenario plants on purpose."                  # (required)
+seed: "template-01"                  # (required) any string; same seed => same telemetry
+system: default-shop                 # which service topology to simulate (packages/scenarios/systems/)
+
+faults:                              # (required) usually exactly one
+  - kind: service_crash_loop         # must be a FaultKind the engine knows (packages/engine/src/types.ts)
+    target: catalog
+    startTick: 10
+    params: {}
+
+noise:                               # distractions; at least one from scenario #3 onwards
+  - kind: deploy
+    target: auth
+    tick: 8
+    note: "harmless config change"
+
+alert:                               # (required) what pages the player
+  tick: 14
+  text: "catalog: 5xx rate > 5% for 2m"
+
+impactBudget: 60                     # ticks until the incident becomes "severe"
+
+referencePath:                       # (required) what a strong engineer would do, in order.
+  - { ask: logs, service: catalog, window: 5 }       # only questions of this scenario's level!
+  - { act: restart, target: catalog }
+  - { act: declareMitigated }
+
+rootCause: "One sentence, plain words."   # (required)
+
+review:                              # feeds the post-incident review (three sentences, no score)
+  redundant: []
+  keySignal: "which single signal already contained the answer"

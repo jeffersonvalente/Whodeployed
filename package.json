@@ -1,0 +1,15 @@
+{
+  "name": "whodeployed",
+  "private": true,
+  "version": "0.0.0",
+  "description": "A browser deduction game about production incidents. The dashboard is green and it's lying.",
+  "license": "Apache-2.0",
+  "packageManager": "pnpm@9.12.0",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "test": "pnpm -r test --if-present",
+    "lint": "pnpm -r lint --if-present",
+    "validate": "pnpm -r validate --if-present",
+    "build": "pnpm -r build --if-present"
+  }
+}
