@@ -24,8 +24,8 @@
     "node": ">=22"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
-    "typecheck": "tsc --noEmit",
+    "build": "tsc -p tsconfig.build.json && tsc -p tsconfig.build.cli.json",
+    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.node.json",
     "lint": "eslint .",
     "test": "vitest run --coverage",
     "fixtures": "node scripts/gen-fixtures.mjs",

@@ -1,0 +1,9 @@
+{
+  "//": "CLI build: emits dist/cli/ with @types/node. src/index.ts is listed so the program is never empty while src/cli/ has no files; its output is identical to the library build.",
+  "extends": "./tsconfig.build.json",
+  "compilerOptions": {
+    "types": ["node"]
+  },
+  "include": ["src/index.ts", "src/cli"],
+  "exclude": []
+}

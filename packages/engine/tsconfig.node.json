@@ -1,0 +1,9 @@
+{
+  "//": "Node-side typecheck (ADR-008): src/cli/, test/, scripts/ and configs get @types/node. The library itself is checked without it by tsconfig.json.",
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": ["node"]
+  },
+  "include": ["src/cli", "test", "scripts", "vitest.config.ts"],
+  "exclude": []
+}

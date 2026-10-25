@@ -1,4 +1,5 @@
 {
+  "//": "Library typecheck (ADR-008, SPEC §3.6): src/ except src/cli/, ES2022 only, no DOM and no @types/node. Node-side code (CLI, tests, scripts, configs) is checked by tsconfig.node.json.",
   "compilerOptions": {
     "target": "ES2022",
     "lib": ["ES2022"],
@@ -13,7 +14,8 @@
     "declaration": true,
     "skipLibCheck": true,
     "noEmit": true,
-    "types": ["node"]
+    "types": []
   },
-  "include": ["src", "test", "scripts", "vitest.config.ts"]
+  "include": ["src"],
+  "exclude": ["src/cli"]
 }
