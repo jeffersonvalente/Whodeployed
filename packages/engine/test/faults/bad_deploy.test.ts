@@ -210,6 +210,31 @@ describe('parameters', () => {
     for (const s of roots) if (s.type === 'span') expect(s.status).toBe(s.instance === affected ? 'error' : 'ok')
   })
 
+  // #44: the affected instance fails with probability errorRatio (ADR-004), one independent draw
+  // per request. Kills `.chance(errorRatio)` -> `.chance(1)` (pooled fraction ~1) and
+  // `rng('serve', tick, traceId)` -> `rng('serve')` (every request of a seed draws the same number,
+  // so each seed is all-or-nothing). Server spans of the affected instance from startTick to the
+  // end of the run (~80 per seed), 12 seeds.
+  it.each([0.3, 0.5])('errorRatio = %s: the affected instance fails that fraction of its requests (pooled ±0.05, per seed ±0.2)', (errorRatio) => {
+    const faults = resolve({ params: { errorRatio } })
+    let failed = 0
+    let total = 0
+    for (const seed of SEEDS) {
+      const records = run(seed, faults)
+      const affected = deployEvents(records)[0]!.instance!
+      const served = records.filter((r) => r.type === 'span' && r.kind === 'server' && r.component === 'gateway' && r.instance === affected && r.tick >= START)
+      const errors = served.filter((s) => s.type === 'span' && s.status === 'error').length
+      expect(served.length, seed).toBeGreaterThanOrEqual(40)
+      const fraction = errors / served.length
+      expect(fraction, seed).toBeGreaterThanOrEqual(errorRatio - 0.2)
+      expect(fraction, seed).toBeLessThanOrEqual(errorRatio + 0.2)
+      failed += errors
+      total += served.length
+    }
+    expect(failed / total).toBeGreaterThanOrEqual(errorRatio - 0.05)
+    expect(failed / total).toBeLessThanOrEqual(errorRatio + 0.05)
+  })
+
   it('a later startTick moves the deploy event', () => {
     expect(deployEvents(run('late', resolve({ startTick: 20 })))).toMatchObject([{ tick: 20 }])
   })
