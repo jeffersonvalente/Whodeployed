@@ -53,7 +53,7 @@ Linha 6 (alerta ruidoso) é `noise`; linha 8 é composição de duas falhas (F-6
 - **`connection_pool_exhaustion`**: em cada instância do alvo, conexões vazadas = `min(poolSize, leakPerTick × (s + 1))`; `onResources` soma vazadas e limita `connections` a `poolSize`. Quando vazadas + em uso ≥ `poolSize`, `onCall` às `database` do alvo espera (`waitOperation: 'db.acquire'`) até liberar ou até `acquireTimeoutMs` (depois `fail`: `connection pool timeout`). `poolSize` sobrescreve `dbPoolSize` só no alvo.
 - **`bad_deploy`**: em `s = 0`, escolhe `affectedInstances` instâncias por `('fault', i, kind, 'pick')` e emite um `EventRecord` `deploy` por instância (com `instance`). Requests servidas por elas falham com probabilidade `errorRatio` (`onServe.fail`, `unhandled exception`, attr `version`). Demais instâncias intactas (F-5).
 - **`slow_dependency`**: `onServe` soma `addedLatencyMs` a toda request do alvo; o alvo não gera erro próprio. Timeouts e retries dos chamadores (ADR-002 §5) produzem o aumento de spans `client` e o erro nos chamadores ("o culpado não é quem grita").
-- **`cache_cold_start`**: em `s = 0` emite `EventRecord` `config` com `restart: true` no alvo e marca a instância `down` só nesse tick; de `s = 0` a `warmupTicks`, `onCall` à cache força miss com probabilidade `1 − (s / warmupTicks)` (sorteio por request); a partir de `s >= warmupTicks`, só a `cacheHitRatio` normal. Sinal indireto: RPS de `postgres` e p95 de quem usa a cache.
+- **`cache_cold_start`**: em `s = 0` emite `EventRecord` `config` com `restart: true` no alvo e marca a instância `down` só nesse tick; de `s = 0` a `warmupTicks`, `onCall` à cache força miss com probabilidade `1 − (s / warmupTicks)` (sorteio por request); a partir de `s >= warmupTicks`, só a `cacheHitRatio` normal. Sinal indireto: RPS de `postgres` e **p50** de quem usa a cache (PRD Emenda 1; texto corrigido na Emenda 2 desta ADR).
 
 Valores padrão foram escolhidos para satisfazer a tabela "Assinaturas de falha" do PRD com a topologia fixa da ADR-002; se um teste F-3 exigir ajuste, a tarefa daquela falha ajusta **só** o default e a faixa do seu kind, atualizando esta tabela no mesmo PR (o Arquiteto revisa).
 
@@ -86,3 +86,36 @@ Motivo: em YAML, `target: ~` ou `target:` sem valor viram `null`; tratar isso co
 ### Chaves de `params`
 
 Só chaves próprias contam, e qualquer chave que não seja parâmetro documentado do kind é `unknown_param`, inclusive `__proto__`, `constructor` e `toString`. `resolveFaults` já usa `Object.keys` + `Object.hasOwn` (correto). O problema de #22 está no produtor: o parser do CLI montava `params` como literal `{}`, onde `params['__proto__'] = 1` não cria propriedade. O parser passa a montar `params` com `Object.create(null)`, para a chave chegar a `resolveFaults` e falhar como `unknown_param` (exit 2). Implementação: T1.23 (edita `src/cli/args.ts`). O loader YAML da fase 3–4 segue a mesma regra.
+
+## Emenda 2 — 2026-10-25 (PRD Emenda 2, PR #46; issue #24)
+
+### Contexto
+
+A Emenda 2 do PRD fixou a leitura de "≥ 10 seeds" (R1–R5: limiar na média, piso de 75% por seed, existência em toda seed) e as métricas elegíveis de F-4 (E1–E4: piso absoluto no baseline, erro % em p.p., par fixo em todas as seeds). Medição do PM com 40 seeds e defaults: `disk_full` e `connection_pool_exhaustion` falham; as outras 4 passam. Medição do Eng. Motor da T1.25: com `connection_pool_exhaustion` em `payment` + `service_crash_loop` em `catalog` (F-6), a assinatura do pool some em 5/40 seeds.
+
+Diagnóstico comum às duas: **amostra pequena por seed**, não semântica errada. `payment` recebe ≈ 1,2 req/tick (ratio 0,1 no `gateway`, ingress fixo de 12/tick) e `orders-worker` 2 req/tick; na janela de 6 ticks são ≈ 7 e 12 requests por seed. Uma condição que só aparece numa fração dessas requests (ou num pedaço da janela) zera em algumas seeds.
+
+### Decisão
+
+1. **`connection_pool_exhaustion`: `leakPerTick` padrão passa de 2 para 4; `poolSize` fica em 20.**
+   - Com 20/2 o pool só esgota em `s = 9` (`leakedAt(s) = min(poolSize, leakPerTick·(s+1))`), deixando só 3 dos 6 ticks da janela (`s = 6..11`) esgotados; em seeds em que `payment` recebe 0 requests nesses 3 ticks (mais provável em F-6, quando o crash do `catalog` faz o `gateway` abortar antes de chamar `payment`), a falha não aparece.
+   - Com 20/4 o pool esgota em `s = 4`: a janela inteira fica esgotada em toda seed, com 2 ticks de margem, e as conexões sobem visivelmente (4, 8, 12, 16, 20) antes, que é a pista da linha 3 (SPEC §7).
+   - `poolSize` fica igual ao `dbPoolSize` do `default-shop` (ADR-002 §6), para a métrica de conexões do alvo e a visão do DBA continuarem batendo com o pool do sistema. A alternativa `poolSize = 10` (esgota no mesmo `s = 4`) foi descartada por isso.
+   - **Invariante (teste fechado, independente de seed):** com os defaults, `leakedAt(6, leakPerTick, poolSize) >= poolSize`, ou seja, o pool está esgotado no primeiro tick da janela. Mudar o default de novo exige manter esse invariante.
+   - Medição do Eng. Motor (T1.25, 40 seeds, R2–R5): com 20/4, pool sozinho e pool + `service_crash_loop` passam em 40/40 (p95 de `payment` mín. 6,56×, p95 de `gateway` mín. 3,10×, p50 de `gateway` médio 0,68×). A T1.37 confirma com a lista de seeds do teste.
+   - Faixas não mudam. A semântica não muda (nenhuma linha da seção "Semântica" é alterada).
+2. **`disk_full`: `failRatio` padrão sobe; `fillTicks` fica em 3.**
+   - `fillTicks ≤ 6` garante a janela inteira "cheia"; 3 já cumpre e preserva a fase de `warn` (`disk usage high`), que é a pista que antecede o erro.
+   - Com `failRatio = 0,4`, uma request de `orders-worker` (chamada direta, `retries: 2`) só falha com probabilidade 0,4³ ≈ 6,4%, e uma de `payment` (`retries: 1`) com 0,16; com ≈ 12 e ≈ 7 requests por seed na janela, várias seeds ficam em +0 p.p. Subir `failRatio` aumenta a probabilidade de a tentativa final falhar, sem roteirizar nada no chamador.
+   - **Ponto de partida: 0,8** (`orders-worker` ≈ 51% de erro por request, `payment` ≈ 64%). A T1.36 escolhe o **menor** valor da grade {0,6; 0,7; 0,8; 0,9} que cumpre F-3 linha 2 e F-4 com R1–R5/E1–E4 em 40 seeds e na lista fixa do teste, com o pior seed ≥ 1,5× o piso por seed (+3,75 p.p. → ≥ +5,6 p.p.), e registra a medição no PR. Menor valor porque um disco que derruba quase toda request deixa de ensinar "sintoma longe da causa": o alvo grita tão alto quanto os dependentes.
+   - Par F-4 fixo recomendado: (`orders-worker`, `errorPct`) — chamador direto, sem cache no caminho. Alternativa aceita: (`payment`, `errorPct`). O teste de F-3 linha 2 fixa o mesmo serviço dependente em todas as seeds (mais estrito que "≥ 1 serviço" e coerente com E4).
+   - Faixas e semântica não mudam.
+3. **Nenhuma mudança de geração.** `src/sim/traffic.ts`, `src/world/default-shop.ts` e a semântica dos 6 kinds ficam como estão: mexer no tráfego (ex.: mais requests para `payment`) mudaria as assinaturas já aprovadas das outras 4 falhas e todos os fixtures. Se a T1.36 ou a T1.37 não fecharem os critérios só com o default, o engenheiro para e abre issue para o Arquiteto; mudança de semântica é nova emenda desta ADR, não decisão da task.
+4. **Texto corrigido:** a semântica de `cache_cold_start` dizia "p95 de quem usa a cache"; passa a "p50", alinhada com a Emenda 1 do PRD (F-3 linha 7). Os comentários de cabeçalho de `src/faults/cache_cold_start.ts` (ainda fala em p95) e de `src/faults/service_crash_loop.ts` (diz "1 up, 2 down … exactly one instance is up", falso com `restartTicks = 3`: com período 4 e 3 réplicas, em 3 de cada 4 ticks há exatamente uma instância em pé e em 1 de cada 4 nenhuma; ≥ 1 fora em todo tick, como esta ADR exige) são corrigidos pelas tasks T1.34 e T1.35.
+
+### Consequências
+
+- Os fixtures de `disk_full` e `connection_pool_exhaustion` (T1.27) dependem destes defaults: T1.27 só gera depois de T1.36 e T1.37 em `main`. `fixtures/answers/*.json` são baseline e não mudam.
+- A suíte multi-falha (T1.25) usa `connection_pool_exhaustion` com defaults: depende da T1.37.
+- O exemplo de cenário em SPEC §7 declara `poolSize: 20, leakPerTick: 2` explícitos, com `startTick: 12` e alerta no tick 18; com esses valores o pool só esgota no tick 21, depois do alerta. Isso é conteúdo de cenário (fase 3), não default do motor: fica registrado para o Eng. Conteúdo ajustar os params do cenário 3, sem mudar o SPEC.
+- O `--help` do CLI é gerado do catálogo e acompanha os defaults sem edição; o README (T1.28) não copia defaults à mão.
