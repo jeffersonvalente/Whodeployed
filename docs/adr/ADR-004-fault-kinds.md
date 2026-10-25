@@ -40,7 +40,7 @@ Linha 6 (alerta ruidoso) é `noise`; linha 8 é composição de duas falhas (F-6
 | `bad_deploy` | `catalog` | serviço com ≥ 2 instâncias | `affectedInstances` | 1 | 1–(réplicas−1) | sim | instances |
 | | | | `errorRatio` | 0.6 | 0.05–1 | não | ratio |
 | `slow_dependency` | `postgres` | qualquer componente com chamadores | `addedLatencyMs` | 1500 | 50–30000 | sim | ms |
-| `cache_cold_start` | `redis` | dependência `cache` | `warmupTicks` | 6 | 1–60 | sim | ticks |
+| `cache_cold_start` | `redis` | dependência `cache` | `warmupTicks` | 30 | 1–60 | sim | ticks |
 
 `affectedInstances.max` depende do alvo; o catálogo guarda `max: 64` e `resolveFaults` aplica `réplicas − 1` (a mensagem cita o limite efetivo).
 

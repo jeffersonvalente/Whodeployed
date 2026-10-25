@@ -33,7 +33,7 @@ const ADR_004: Record<
     addedLatencyMs: [1500, 50, 30000, true, 'ms'],
   }],
   cache_cold_start: [7, 'redis', 'cache', {
-    warmupTicks: [6, 1, 60, true, 'ticks'],
+    warmupTicks: [30, 1, 60, true, 'ticks'],
   }],
 }
 
