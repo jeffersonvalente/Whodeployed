@@ -102,7 +102,9 @@ export const faultCatalog: FaultCatalog = {
     kind: 'bad_deploy',
     campaignRow: 4,
     summary: 'A bad version is deployed to some instances of a service; their requests fail.',
-    defaultTarget: 'catalog',
+    // gateway: its failed requests never reach the services behind it, so the fault shows outside
+    // the target (F-4). Behind a caller with retries (e.g. catalog) the next instance absorbs them.
+    defaultTarget: 'gateway',
     defaultStartTick: DEFAULT_START_TICK,
     // "service with >= 2 instances": resolveFaults checks replicas and caps affectedInstances.
     targetRule: 'service',
@@ -117,7 +119,7 @@ export const faultCatalog: FaultCatalog = {
         description: 'Instances that receive the bad deploy (at most replicas - 1).',
       },
       errorRatio: {
-        default: 0.6,
+        default: 0.9,
         min: 0.05,
         max: 1,
         integer: false,
