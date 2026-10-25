@@ -18,6 +18,22 @@ import {
 } from './signature.js'
 
 const SEEDS10 = Array.from({ length: 10 }, (_, i) => `s-${i}`)
+
+/**
+ * Runs `fn` with ENGINE_QA_SEEDS set to `value` (deleted when undefined) and restores the
+ * caller's value afterwards, so these tests pass whatever list QA exported (#60, R1).
+ */
+function withQaSeeds<T>(value: string | undefined, fn: () => T): T {
+  const saved = process.env[QA_SEEDS_ENV]
+  try {
+    if (value === undefined) delete process.env[QA_SEEDS_ENV]
+    else process.env[QA_SEEDS_ENV] = value
+    return fn()
+  } finally {
+    if (saved === undefined) delete process.env[QA_SEEDS_ENV]
+    else process.env[QA_SEEDS_ENV] = saved
+  }
+}
 const ones = (n: number, v = 1) => Array.from({ length: n }, () => v)
 
 describe('signatureWindow', () => {
@@ -29,7 +45,12 @@ describe('signatureWindow', () => {
 
 describe('signatureSeeds (R1)', () => {
   it('without ENGINE_QA_SEEDS: 12 fixed seeds prefix-0..11', () => {
-    expect(signatureSeeds('pool', undefined)).toEqual(Array.from({ length: 12 }, (_, i) => `pool-${i}`))
+    // An explicit `undefined` falls back to the default parameter (process.env), so the variable
+    // is cleared for this case (#60).
+    withQaSeeds(undefined, () => {
+      expect(signatureSeeds('pool', undefined)).toEqual(Array.from({ length: 12 }, (_, i) => `pool-${i}`))
+      expect(signatureSeeds('pool')).toEqual(Array.from({ length: 12 }, (_, i) => `pool-${i}`))
+    })
   })
 
   it('ENGINE_QA_SEEDS replaces the list: comma-separated, trimmed, empty entries dropped', () => {
@@ -48,16 +69,20 @@ describe('signatureSeeds (R1)', () => {
   })
 
   it('reads process.env.ENGINE_QA_SEEDS by default', () => {
-    const saved = process.env[QA_SEEDS_ENV]
-    try {
-      process.env[QA_SEEDS_ENV] = SEEDS10.join(',')
+    withQaSeeds(SEEDS10.join(','), () => {
       expect(signatureSeeds('x')).toEqual(SEEDS10)
-      delete process.env[QA_SEEDS_ENV]
-      expect(signatureSeeds('x')).toEqual(Array.from({ length: 12 }, (_, i) => `x-${i}`))
-    } finally {
-      if (saved === undefined) delete process.env[QA_SEEDS_ENV]
-      else process.env[QA_SEEDS_ENV] = saved
-    }
+      // An explicit undefined also reads the variable (default parameter).
+      expect(signatureSeeds('x', undefined)).toEqual(SEEDS10)
+    })
+    withQaSeeds(undefined, () => expect(signatureSeeds('x')).toEqual(Array.from({ length: 12 }, (_, i) => `x-${i}`)))
+    withQaSeeds('a,b', () => expect(() => signatureSeeds('x')).toThrow(QA_SEEDS_ENV))
+  })
+
+  it('restores the caller value of ENGINE_QA_SEEDS (the suite passes with and without it, #60)', () => {
+    const before = process.env[QA_SEEDS_ENV]
+    withQaSeeds(SEEDS10.join(','), () => undefined)
+    withQaSeeds(undefined, () => undefined)
+    expect(process.env[QA_SEEDS_ENV]).toBe(before)
   })
 })
 
@@ -332,6 +357,7 @@ describe('DET — pure functions', () => {
     expect(effect(f, b, { ratioAtLeast: 3 }, SEEDS10)).toStrictEqual(effect(f, b, { ratioAtLeast: 3 }, SEEDS10))
     expect(ceiling(f, b, { ratioAtMost: 4 })).toStrictEqual(ceiling(f, b, { ratioAtMost: 4 }))
     expect(f).toEqual(copy)
-    expect(signatureSeeds('d', undefined)).toStrictEqual(signatureSeeds('d', undefined))
+    expect(signatureSeeds('d', 'a,b,c,d,e,f,g,h,i,j')).toStrictEqual(signatureSeeds('d', 'a,b,c,d,e,f,g,h,i,j'))
+    withQaSeeds(undefined, () => expect(signatureSeeds('d')).toStrictEqual(signatureSeeds('d')))
   })
 })
