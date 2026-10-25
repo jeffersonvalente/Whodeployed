@@ -12,6 +12,7 @@ import {
   deriveMetrics,
   distribute,
   nearestRank,
+  nearestRankIndex,
   requestMetrics,
 } from '../../src/sim/metrics.js'
 import type {
@@ -216,6 +217,43 @@ describe('nearestRank', () => {
     for (let n = 1; n <= 1000; n++) {
       const v = Array.from({ length: n }, (_, i) => i)
       for (const p of [50, 95, 99]) expect(nearestRank(v, p)).toBe(Math.ceil((p / 100) * n) - 1)
+    }
+  })
+})
+
+describe('nearestRankIndex (ADR-006 Emenda 1)', () => {
+  it('is -1 when n = 0', () => {
+    for (const p of [50, 95, 99]) expect(nearestRankIndex(0, p)).toBe(-1)
+  })
+
+  it('is 0 for a single sample', () => {
+    for (const p of [50, 95, 99]) expect(nearestRankIndex(1, p)).toBe(0)
+  })
+
+  it('follows min(n, max(1, ceil(p × n / 100))) − 1', () => {
+    expect(nearestRankIndex(4, 50)).toBe(1)
+    expect(nearestRankIndex(4, 95)).toBe(3)
+    expect(nearestRankIndex(20, 50)).toBe(9)
+    expect(nearestRankIndex(20, 95)).toBe(18)
+    expect(nearestRankIndex(20, 99)).toBe(19)
+    expect(nearestRankIndex(100, 95)).toBe(94)
+    expect(nearestRankIndex(100, 99)).toBe(98)
+    expect(nearestRankIndex(101, 99)).toBe(99)
+  })
+
+  it('clamps to [0, n - 1] at the extremes', () => {
+    expect(nearestRankIndex(10, 0)).toBe(0)
+    expect(nearestRankIndex(10, 100)).toBe(9)
+  })
+
+  it('is the index nearestRank reads, for every n up to 1000', () => {
+    for (let n = 1; n <= 1000; n++) {
+      const v = Array.from({ length: n }, (_, i) => i * 3)
+      for (const p of [50, 95, 99]) {
+        const index = nearestRankIndex(n, p)
+        expect(index).toBe(Math.ceil((p / 100) * n) - 1)
+        expect(nearestRank(v, p)).toBe(v[index])
+      }
     }
   })
 })

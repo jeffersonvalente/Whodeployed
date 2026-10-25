@@ -1,0 +1,83 @@
+[
+  {
+    "question": {
+      "kind": "askNpc",
+      "role": "dev"
+    },
+    "data": {
+      "kind": "askNpc",
+      "role": "dev",
+      "tick": 30,
+      "hints": [
+        {
+          "component": "cart",
+          "metric": "p95",
+          "current": 20.166666666666668,
+          "usual": 27.166666666666668
+        }
+      ]
+    },
+    "tickCost": 3
+  },
+  {
+    "question": {
+      "kind": "askNpc",
+      "role": "dba"
+    },
+    "data": {
+      "kind": "askNpc",
+      "role": "dba",
+      "tick": 30,
+      "hints": [
+        {
+          "component": "postgres",
+          "metric": "p95",
+          "current": 10.5,
+          "usual": 18
+        },
+        {
+          "component": "postgres",
+          "metric": "p99",
+          "current": 10.5,
+          "usual": 18
+        }
+      ]
+    },
+    "tickCost": 3
+  },
+  {
+    "question": {
+      "kind": "askNpc",
+      "role": "oncall"
+    },
+    "data": {
+      "kind": "askNpc",
+      "role": "oncall",
+      "tick": 30,
+      "hints": [
+        {
+          "component": "payment",
+          "instance": "payment-0",
+          "metric": "p95",
+          "current": 21.833333333333332,
+          "usual": 10.5
+        },
+        {
+          "component": "payment",
+          "instance": "payment-1",
+          "metric": "p95",
+          "current": 2.6666666666666665,
+          "usual": 16
+        },
+        {
+          "component": "cart",
+          "instance": "cart-2",
+          "metric": "p95",
+          "current": 7.333333333333333,
+          "usual": 18.833333333333332
+        }
+      ]
+    },
+    "tickCost": 3
+  }
+]

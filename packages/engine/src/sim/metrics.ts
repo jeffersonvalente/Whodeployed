@@ -40,14 +40,21 @@ export const CPU_JITTER_PCT = 1
 export const MEM_JITTER_RATIO = 0.01
 
 /**
- * Nearest-rank percentile of an ascending array: `sorted[ceil(p/100 × n) − 1]`, 0 when empty.
+ * 0-based nearest-rank index of percentile `p` in a sorted set of `n` samples:
+ * `min(n, max(1, ceil(p × n / 100))) − 1`, or −1 when `n = 0` (ADR-006 Emenda 1).
  * The rank is computed as `ceil(p × n / 100)` so that it is exact in floating point.
+ * The single nearest-rank rule of the engine: the metrics below and the `trace` handler both
+ * use it, so the focused trace duration equals the aggregate pXX by construction (Q-6).
  */
+export function nearestRankIndex(n: number, p: number): number {
+  if (n <= 0) return -1
+  return Math.min(n, Math.max(1, Math.ceil((p * n) / 100))) - 1
+}
+
+/** Nearest-rank percentile of an ascending array: `sorted[nearestRankIndex(n, p)]`, 0 when empty. */
 export function nearestRank(sorted: readonly number[], p: number): number {
-  const n = sorted.length
-  if (n === 0) return 0
-  const rank = Math.min(n, Math.max(1, Math.ceil((p * n) / 100)))
-  return sorted[rank - 1] as number
+  const index = nearestRankIndex(sorted.length, p)
+  return index < 0 ? 0 : (sorted[index] as number)
 }
 
 /** Request metrics derived from a set of server spans (P-1 / P-2). */

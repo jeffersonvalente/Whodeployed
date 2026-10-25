@@ -7,6 +7,7 @@
  */
 import { describe, expect, it } from 'vitest'
 import { trace } from '../../src/questions/trace.js'
+import { nearestRankIndex } from '../../src/sim/metrics.js'
 import type {
   MetricRecord,
   QuestionContext,
@@ -211,6 +212,40 @@ describe('trace handler (Q-6)', () => {
     // p95/p99 rank 5 -> 30 = w
     expect(ask(view, { service: 'payment', percentile: 95 }).focusSpanId).toBe('w-s')
     expect(ask(view, { service: 'payment', percentile: 99 }).focusSpanId).toBe('w-s')
+  })
+
+  it('#21: a tie at the chosen rank is won by the first generated span, not a later one', () => {
+    // ADR-006 Emenda 1: generation order x=20, y=20, a=10, w=30. Sorted with ties by generation
+    // order: a(10), x(20), y(20), w(30). p50 -> rank ceil(0.5 * 4) = 2 -> x. Reversing the tie
+    // comparator would give y, so this test kills that mutation.
+    const world = makeWorld(0)
+    const span = (id: string, durationMs: number): SpanRecord => ({
+      type: 'span', tick: 0, traceId: id, spanId: `${id}-s`, component: 'payment', instance: 'payment-0', operation: 'op', kind: 'server', startMs: 0, durationMs, status: 'ok',
+    })
+    const records = [span('x', 20), span('y', 20), span('a', 10), span('w', 30)]
+    const view = fakeView(world, records)
+    expect(ask(view, { service: 'payment', percentile: 50 }).focusSpanId).toBe('x-s')
+    // p95 / p99 -> rank 4 -> w (no tie there).
+    expect(ask(view, { service: 'payment', percentile: 95 }).focusSpanId).toBe('w-s')
+    expect(ask(view, { service: 'payment', percentile: 99 }).focusSpanId).toBe('w-s')
+    // Same durations, y generated first: the tie now goes to y.
+    const swapped = fakeView(world, [span('y', 20), span('x', 20), span('a', 10), span('w', 30)])
+    expect(ask(swapped, { service: 'payment', percentile: 50 }).focusSpanId).toBe('y-s')
+  })
+
+  it('uses the nearest-rank index of src/sim/metrics.ts (single implementation, ADR-006 Emenda 1)', () => {
+    const world = makeWorld(0)
+    for (const n of [1, 2, 3, 4, 5, 19, 20, 21, 99, 100, 101]) {
+      // Distinct durations, generated in descending order so sorting is exercised.
+      const records: SpanRecord[] = Array.from({ length: n }, (_, i) => ({
+        type: 'span', tick: 0, traceId: `t${i}`, spanId: `t${i}-s`, component: 'payment', instance: 'payment-0', operation: 'op', kind: 'server', startMs: 0, durationMs: 1000 - i, status: 'ok',
+      }))
+      const ascending = [...records].sort((a, b) => a.durationMs - b.durationMs)
+      for (const percentile of percentiles) {
+        const expected = ascending[nearestRankIndex(n, percentile)]?.spanId
+        expect(ask(fakeView(world, records), { service: 'payment', percentile }).focusSpanId, `n=${n} p${percentile}`).toBe(expected)
+      }
+    }
   })
 
   it('only considers server spans of the service in the current tick', () => {
