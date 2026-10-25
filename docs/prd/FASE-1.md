@@ -79,7 +79,7 @@ Legenda de "Quem verifica": **CI** = falha o workflow `.github/workflows/ci.yml`
 | **Determinismo** | | | |
 | D-1 | Mesma seed + mesmos argumentos = saída byte-idêntica: duas execuções do CLI em processos separados produzem o mesmo SHA-256, para baseline e para cada um dos 6 kinds. | Passo de CI: `$CLI simulate --seed gate1 --fault <kind> --ticks 120 \| sha256sum` duas vezes por kind, comparando; QA repete localmente. | CI + QA |
 | D-2 | O determinismo não depende de ambiente: a saída é byte-idêntica com `TZ=UTC LANG=C` e com `TZ=Asia/Tokyo LANG=pt_BR.UTF-8`. | Passo de CI comparando os hashes das duas execuções. | CI |
-| D-3 | Fixtures de referência versionadas: `$ENGINE/fixtures/` contém um NDJSON de ≥ 60 ticks para o baseline e para cada um dos 6 kinds, com o comando que os gerou; um teste regenera e compara byte a byte. (São também os fixtures para a UI, SPEC §9 Eng. Motor.) | `ls $ENGINE/fixtures/` mostra 7 arquivos; teste de regeneração passa. | CI |
+| D-3 | Fixtures de referência versionadas: `$ENGINE/fixtures/` contém um NDJSON de ≥ 60 ticks para o baseline e para cada um dos 6 kinds, com o comando que os gerou; um teste regenera e compara byte a byte. (São também os fixtures para a UI, SPEC §9 Eng. Motor.) | `ls $ENGINE/fixtures/*.ndjson \| wc -l` = 7 (subdiretórios como `fixtures/answers/` não contam; Emenda 1); teste de regeneração passa. | CI |
 | D-4 | Nenhuma fonte de não-determinismo em `$ENGINE/src`: sem `Math.random`, `Date.now`, `new Date(`, `performance.now`, `crypto.getRandomValues`, `crypto.randomUUID`; lint falha se `Math.random` aparecer fora de `test/`. Toda aleatoriedade vem do PRNG seedado do pacote. | `grep -rnE "Math\.random\|Date\.now\|new Date\(\|performance\.now\|getRandomValues\|randomUUID" packages/engine/src` vazio; regra de lint ativa. | CI |
 | D-5 | Sem I/O em runtime na biblioteca (SPEC §3.6, CLAUDE.md): nada de rede, disco ou relógio real. O CLI só escreve em stdout/stderr (e em arquivo apenas se uma flag explícita de saída for definida em ADR). | Coberto por CT-3 para a biblioteca; QA revisa os imports do CLI e confirma ausência de `http`, `https`, `net`, `fetch`, `dgram`. | CI + QA |
 | **CLI** | | | |
@@ -111,7 +111,18 @@ Medidas na janela de assinatura, com parâmetros padrão, contra o baseline. Os 
 | 3 | Pool de conexões esgotado (`connection_pool_exhaustion`) | Métrica de conexões do alvo atinge `poolSize` em ≥ 1 tick da janela; p95 do alvo ≥ 3× baseline; nos traces p95 do alvo, um span de espera por conexão responde por ≥ 50% da duração da raiz | p95 de `gateway` sobe ≥ 25%, enquanto o p50 de `gateway` fica ≤ 1,5× baseline (agregado esconde o gargalo) |
 | 4 | Deploy ruim em 1 de N instâncias | Evento de deploy com alvo e instância no `startTick`; condições de F-5 | Erro % do serviço agregado sobe (≥ 1 p.p.), mas F-5 vale |
 | 5 | Retry storm após dependência lenta | p95 do alvo (dependência lenta) ≥ 3× baseline | Nº de spans filhos de chamadores para o alvo ≥ 2× baseline (retries); o componente com maior aumento absoluto de erro % **não** é o alvo ("o culpado não é quem grita") |
-| 7 | Cache frio após restart do redis | Evento de restart/config de `redis` no `startTick` | RPS de `postgres` ≥ 2× baseline nos 3 primeiros ticks após `startTick`, e volta a ≤ 1,2× baseline até `startTick + warmup` (param documentado); p95 de ≥ 1 serviço que usa `redis` sobe ≥ 25% |
+| 7 | Cache frio após restart do redis | Evento de restart/config de `redis` no `startTick` | RPS de `postgres` ≥ 2× baseline nos 3 primeiros ticks após `startTick`, e volta a ≤ 1,2× baseline até `startTick + warmup` (param documentado); p50 de ≥ 1 serviço que usa `redis` sobe ≥ 25% (Emenda 1) |
+
+### Emendas aos critérios
+
+**Emenda 1 — 2026-10-25 (PM). Origem: issues #39 e #24.**
+
+1. **F-3, linha 7 (`cache_cold_start`): "p95 ... sobe ≥ 25%" passa a "p50 ... sobe ≥ 25%".**
+   - *Fato (#39, 40 seeds, cache 100% fria):* o p95 dos serviços que usam `redis` sobe +17% a +25%, e passar ou não depende das seeds escolhidas. O p50 sobe +27% a +41%, o RPS do `postgres` ×3 a ×5 e as conexões de auth/cart/catalog +190% a +400%.
+   - *Justificativa pedagógica:* cache frio não é um gargalo de cauda; ele piora **toda** request que passa pelo cache, porque cada miss paga uma ida ao banco. A assinatura honesta dessa falha é a mediana subindo em vários serviços ao mesmo tempo, com a carga migrando para o `postgres`. Um p95 que mal se mexe enquanto o p50 sobe é justamente o "sinal que mente" da linha 7: quem olha só a cauda acha que está tudo bem (SPEC §3.4). O que a linha 7 ensina (SPEC §7: mitigar sem root cause, usar NPC) não depende de cauda; depende de o jogador ver um efeito amplo e difuso, sem um culpado óbvio, logo depois de um restart. O sinal continua indireto (serviços chamadores e `postgres`, não o alvo `redis`), e as condições de RPS do `postgres` continuam valendo.
+   - *Alternativa descartada:* dar ao miss um custo maior que emerja da simulação (#39, opção 2, do Arquiteto). Mexeria em `traffic.ts`, em todos os fixtures e nas assinaturas já aprovadas das outras falhas, só para fabricar uma cauda que a falha real não tem.
+   - *Efeito:* o `it.todo` da T1.22 vira teste de p50 ≥ 25% sobre ≥ 10 seeds, na janela de assinatura, com os parâmetros padrão (`warmupTicks` conforme ADR-004).
+2. **D-3, só redação:** a contagem de 7 fixtures vale para `fixtures/*.ndjson` (baseline + 6 kinds). Subdiretórios de fixtures de resposta, como `fixtures/answers/`, são permitidos e não entram na contagem (#24).
 
 ## Fora de escopo nesta fase
 
@@ -135,6 +146,7 @@ Medidas na janela de assinatura, com parâmetros padrão, contra o baseline. Os 
 | Gamesmanship: jogador decora padrão do jogo | Seeds diferentes produzem a mesma telemetria a menos de ids (S-5 falha); assinatura de falha sempre no mesmo tick e na mesma instância independentemente da seed. | S-5; F-3 exigido sobre ≥ 10 seeds; instância afetada e ruído dependentes da seed. |
 | Gating artificial (ferramenta travada) | Parâmetro, flag ou campo de nível em `ask()`, `Question` ou CLI; algum `kind` de `Question` não implementado ou que lança "não suportado". | Q-1 (6 kinds, sem nível, `grep` vazio). |
 | Virar curso com pixel art (escopo infla) | PR adicionando métrica, sinal ou exportador fora de SPEC §4 (ex.: SLO, burn rate, OTLP, hit rate) ou ferramenta de UI no motor. | S-1 fixa o conjunto de métricas; "Fora de escopo" acima; QA reprova citando SPEC §3.1/§4. |
+| Gamesmanship: jogador decora padrão do jogo — **observação para a fase 2** (Emenda 1, QA do #35 na #24) | `askNpc` devolve hint já no baseline sem falha: 45/50 seeds (dev), 49/50 (dba), 50/50 (oncall). Na fase 2, o jogador pode aprender que "o NPC sempre aponta algo" e passar a ignorar a pergunta mais cara (`tickCost` 3, nível Sênior em SPEC §5), e aí o sinal vira ruído puro em vez de um sinal que às vezes mente. | Nenhum critério novo nesta fase: Q-9 não é violado. Fica registrado como entrada para o PRD da fase 2 decidir. |
 | Projeto morre a 70% | Duas semanas sem commit em `packages/engine`; fase passando das 3 semanas de SPEC §8 sem PUB-1 verde. | Tarefas ≤ 1 dia (Arquiteto); PUB-1 permite release útil do motor mesmo se PUB-4 seguir bloqueado. |
 
 ## Roteiro de teste com humano
