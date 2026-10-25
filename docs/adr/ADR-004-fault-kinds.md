@@ -67,3 +67,22 @@ Valores padrão foram escolhidos para satisfazer a tabela "Assinaturas de falha"
 - **`retry_storm` como nome do kind 5:** a tempestade é consequência; injetá-la diretamente seria roteirizar o sintoma (fere SPEC §3.3).
 - **`redis_restart` como nome do kind 7:** acopla a falha a um componente; `cache_cold_start` vale para qualquer `cache`.
 - **Instância fixa (índice 0) em `bad_deploy`:** viraria padrão decorável; a seed escolhe.
+
+## Emenda 1 — 2026-10-25 (issue #24, #23, #22)
+
+### Entrada ausente vs `null`
+
+Decisão: **`null` é rejeitado** (opção (b) de #23). "Ausente" é só a chave que não existe ou vale `undefined`; nesse caso entra o default do catálogo. `null` em qualquer campo é um valor inválido e recebe o mesmo erro que qualquer outro valor inválido daquele campo:
+
+| Campo | `null` lança | `validValues` |
+| --- | --- | --- |
+| `target` | `unknown_target` | componentes do mundo |
+| `startTick` | `invalid_start_tick` | `integer >= 0` |
+| `params.<nome>` | `param_out_of_range` | `min..max` efetivo |
+| `params` | `unknown_param` (campo `faults[i].params`) | nomes dos parâmetros do kind |
+
+Motivo: em YAML, `target: ~` ou `target:` sem valor viram `null`; tratar isso como ausente faria um autor de cenário receber o alvo padrão em silêncio, sem a mensagem de F-7 (SPEC §3.7). O JSON Schema de cenário (fases 3–4) deve rejeitar o mesmo, mas `resolveFaults` continua sendo a fronteira de validação do motor. Implementação: T1.30 (troca dos `??` em `src/faults/resolve.ts` por teste de `undefined`, mais um teste por linha da tabela).
+
+### Chaves de `params`
+
+Só chaves próprias contam, e qualquer chave que não seja parâmetro documentado do kind é `unknown_param`, inclusive `__proto__`, `constructor` e `toString`. `resolveFaults` já usa `Object.keys` + `Object.hasOwn` (correto). O problema de #22 está no produtor: o parser do CLI montava `params` como literal `{}`, onde `params['__proto__'] = 1` não cria propriedade. O parser passa a montar `params` com `Object.create(null)`, para a chave chegar a `resolveFaults` e falhar como `unknown_param` (exit 2). Implementação: T1.23 (edita `src/cli/args.ts`). O loader YAML da fase 3–4 segue a mesma regra.

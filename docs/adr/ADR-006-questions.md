@@ -57,3 +57,34 @@ Antes do handler: `kind` conhecido; `service` existe no mundo (`unknown_service`
 - **`window` em minutos:** mistura duas unidades de tempo no motor; tick é a unidade de SPEC §6.
 - **`tickCost` proporcional a `window`:** incentivaria janelas curtas artificiais; o custo é da decisão de perguntar, não do volume.
 - **NPC devolvendo `FaultKind` suspeito:** entregaria a resposta e violaria SPEC §3.2/§3.4.
+
+## Emenda 1 — 2026-10-25 (issue #24, QA de #3, #10, #11, #16)
+
+### Contexto das perguntas (`AskEnvironment` → `QuestionContext`)
+
+Há dois contratos, um por camada:
+
+- `AskEnvironment { view, config }` (`src/questions/ask.ts`, interno) é o que o orquestrador (T1.15) passa ao dispatcher: um objeto por `Simulation`, **o mesmo** em toda chamada, com a `TelemetryView` viva da execução e o `SimulationConfig` dela.
+- `QuestionContext { view, lastWeek() }` (`types.ts` §8) é o que os handlers recebem.
+
+O dispatcher (T1.16) monta o `QuestionContext` a partir do `AskEnvironment` em cada chamada: `view = env.view`; `lastWeek` é uma função que cria a simulação `lastWeek` na primeira vez que algum handler a chama e a memoiza **por `AskEnvironment`** (ex.: `WeakMap<AskEnvironment, ...>`). Perguntas que não usam `lastWeek` (`dashboard`, `logs`, `trace`, `whatChanged`, `compare by instance`) nunca a simulam.
+
+### Comprimento do `lastWeek`
+
+A simulação `lastWeek` (mesmo `SystemDefinition`, `faults: []`, `noise: []`, seed `${seed}:lastWeek`, ADR-003 §4) cobre **sempre pelo menos os ticks `[0, view.now]`**. Se a execução principal avançou desde a última pergunta, o dispatcher avança a `lastWeek` memoizada até o `now` atual antes de entregá-la (avançar é equivalente a simular de novo, porque um tick não depende de ticks futuros). Assim o caso "`lastWeek` mais curto que a execução" é inalcançável, e `compare by lastWeek` e `askNpc` sempre encontram os mesmos ticks nas duas execuções. O tratamento defensivo atual de `askNpc` (pular candidato sem dados) pode ficar; não é mais exercitado.
+
+### `askNpc` / `dba`
+
+"`connections` dos serviços que as chamam" inclui quem chega à `database` só pelo `onMiss` de uma cache (no `default-shop`: `auth`, `catalog`, `cart`, além de `payment` e `orders-worker`), coerente com a regra de pools da ADR-005 (Emenda 1). É o comportamento da T1.11.
+
+### Nearest-rank único
+
+Hoje há duas implementações equivalentes (`src/sim/metrics.ts` e `src/questions/trace.ts`; o QA conferiu igualdade para p ∈ {50, 95, 99} e n ≤ 5·10⁶). A T1.16 unifica: `metrics.ts` exporta `nearestRankIndex(n, p)` (índice 0-based `min(n, max(1, ceil(p × n / 100))) − 1`, ou −1 se n = 0), `nearestRank` passa a usá-la, e `trace.ts` ordena os spans (empate: ordem de geração) e escolhe `sorted[nearestRankIndex(n, p)]`. Nada muda na saída. Q-6 fica coerente por construção, de fato com a mesma função.
+
+### Q-6 na simulação real
+
+O teste de Q-6 da T1.10 usa views montadas à mão. A verificação "duração do foco de `trace` = pXX do agregado do `dashboard` no mesmo tick", para p ∈ {50, 95, 99}, todo componente, sobre baseline e os 6 kinds, é da **T1.24** (suíte de propriedades), chamando o handler `trace` sobre a view da simulação real tick a tick.
+
+### Teste de desempate (#21)
+
+O teste de desempate de `trace` precisa de uma entrada em que o empate no rank escolhido decida entre o primeiro e um span gerado depois (ex.: em ordem de geração `x=20, y=20, a=10, w=30`, p50 ⇒ foco `x`). Corrigido pela T1.16, que já edita `trace.ts` e seu teste.

@@ -63,3 +63,33 @@ Níveis: `debug`, `info`, `warn`, `error`. Todo span com `status: 'error'` (clie
 - **OTLP/JSON:** fora de escopo (SPEC §4) e verboso demais.
 - **Um registro de métrica por nome de métrica:** 8× mais linhas sem ganho; o registro único facilita P-1.
 - **Linha de cabeçalho com seed/config:** quebraria W-4 (todo registro tem tick).
+
+## Emenda 1 — 2026-10-25 (issue #24, QA da onda 1 e da T1.14)
+
+Registra escolhas da T1.5, T1.6, T1.7, T1.13 e T1.14 que esta ADR deixava em aberto. Salvo onde indicado, `main` já se comporta assim.
+
+### Recursos (T1.6)
+
+- **Jitter:** `cpu` recebe ruído uniforme em `[−1, +1)` ponto percentual; `mem` recebe ruído uniforme em `[−1%, +1%)` de `memBaseMb`. Ambos do stream `('res', tick, component, instance)`. Constantes `CPU_JITTER_PCT` e `MEM_JITTER_RATIO` em `src/sim/metrics.ts`.
+- **Pools por banco:** `dbPoolSize` é por instância **e por dependência `database`** (como diz `types.ts`). Para cada banco que a instância chama (por `calls[].target` ou `onMiss.target`), o pool tem `ceil(Σ durationMs dos spans client para aquele banco / 10000)` conexões; `connectionsAdd` e `connectionsCap` da instância se aplicam a **cada pool**; a métrica `connections` do serviço é a soma dos pools. Isto substitui a fórmula única do texto original ("Σ ... / 10000 + connectionsAdd") e coincide com ela quando o serviço chama um só banco, que é o caso de todo o `default-shop`. Serviço que não chama banco tem um pool implícito de 0 conexões (o `connectionsAdd` continua aparecendo).
+- **Dependências:** a métrica `connections` de uma dependência é a soma das conexões dos clientes **a ela**: para `database`, os pools acima; para `cache` e `queue`, `ceil(Σ ms dos spans client / 10000)` por instância cliente. Essa ocupação de cache/queue conta só do lado da dependência; a métrica do cliente conta só pools de banco. Com várias réplicas, o total é repartido entre as instâncias da dependência em proporção aos ms que cada uma serviu, pelo método do maior resto (empate para o menor índice); sem ms servidos, tudo vai para a primeira instância em pé; instância `down` recebe 0. Depois aplicam-se o `connectionsAdd`/`connectionsCap` da própria dependência.
+
+### Chaves de `attrs`
+
+Chaves de `attrs` (logs, `FailEffect`, `ErrorDetail`, `FaultLog`) casam com `^[A-Za-z_][A-Za-z0-9_]*$`: identificador, **nunca** em forma de inteiro. Motivo: `Object.entries`/`JSON.stringify` põem chaves inteiras (`"2"`) antes das demais, e a ordem deixaria de ser a de inserção que esta ADR promete. O serializador (T1.5) não muda. Quem gera `attrs` (T1.7, T1.14 e as falhas T1.17–T1.22) obedece à regex; a T1.24 verifica sobre toda a telemetria gerada.
+
+### Vocabulário de mensagens (fechado)
+
+`message` de log é uma destas strings; mensagem nova entra por emenda desta ADR ou da ADR-004 (mensagens de falha), no mesmo PR que a usa:
+
+| Origem | Mensagens |
+| --- | --- |
+| Tráfego (T1.14, `MESSAGES` em `traffic.ts`) | `connection refused`, `upstream timeout`, `upstream error`, `dependency call failed` |
+| Logs de request (T1.7) | `request completed` (nível `info`) |
+| Falhas (ADR-004, "Semântica") | `process exited`, `no space left on device`, `disk usage high`, `connection pool timeout`, `unhandled exception` |
+
+### Verificador independente (T1.13)
+
+- **Códigos de saída:** 0 = coerente; 1 = primeiro desvio de coerência ou de formato (stderr); **2** = erro de uso ou de leitura (argumentos a mais, arquivo inexistente). Substitui o "0 ou 1" do texto original.
+- **`null` em campo opcional** (ex.: `"instance": null`) é desvio de formato: o verificador sai 1. Hoje ele aceita e trata como agregado; a correção é da T1.26 (que já usa o script no CI e passa a editá-lo).
+- **Fica aceito, por desenho:** registro `metric` zerado em tick ou componente sem spans, e instância sem registro de métrica. O verificador não conhece o `SystemDefinition`, então não sabe quais componentes e instâncias existem; completude das métricas é S-1, verificada pela T1.24 contra o mundo.

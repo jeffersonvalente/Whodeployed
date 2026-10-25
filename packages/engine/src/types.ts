@@ -117,6 +117,9 @@ export type FaultCatalog = { readonly [K in FaultKind]: FaultCatalogEntry<K> }
 /**
  * Unvalidated fault input (from CLI or, later, scenario YAML). Missing fields take the
  * catalog defaults; resolveFaults() turns it into a Fault or throws EngineError (F-7).
+ * "Missing" means the key is absent or `undefined`; `null` (e.g. YAML `target: ~`) is rejected
+ * like any other invalid value (ADR-004 "Entrada ausente vs null"). Only own keys of `params`
+ * count, so `__proto__` or `constructor` reach the validator and fail as unknown_param.
  */
 export interface FaultInput {
   kind: string
@@ -405,21 +408,29 @@ export interface SimulationConfig {
   noise?: readonly NoiseEvent[]
 }
 
-/** Read-only, indexed access to the telemetry generated so far. Returned arrays keep record order. */
+/**
+ * Read-only, indexed access to the telemetry generated so far. Returned arrays keep record order.
+ *
+ * Immutability (ADR-010, Q-3): every call returns a fresh array the caller may reorder or filter,
+ * but the records in it are shared with the store and with every later query. They are typed
+ * `Readonly<...>` here and frozen at runtime by the store (`Object.freeze`, including log `attrs`),
+ * so a handler or a caller of ask() cannot change what later queries, all() or the NDJSON see.
+ * `world` is frozen too (a new frozen snapshot per appended tick).
+ */
 export interface TelemetryView {
-  readonly world: World
+  readonly world: Readonly<World>
   /** Last simulated tick (= world.tick). */
   readonly now: number
   /** All MetricRecords (instance and aggregate) of `component` with tick in [from, to]. */
-  metricsOf(component: ComponentName, from: number, to: number): MetricRecord[]
-  logsOf(component: ComponentName, from: number, to: number): LogRecord[]
+  metricsOf(component: ComponentName, from: number, to: number): Readonly<MetricRecord>[]
+  logsOf(component: ComponentName, from: number, to: number): Readonly<LogRecord>[]
   /** Spans whose `component` is `component` and that started in `tick`. */
-  spansOf(component: ComponentName, tick: number): SpanRecord[]
+  spansOf(component: ComponentName, tick: number): Readonly<SpanRecord>[]
   /** All spans with this traceId, in generation order. */
-  traceOf(traceId: string): SpanRecord[]
-  eventsIn(from: number, to: number): EventRecord[]
+  traceOf(traceId: string): Readonly<SpanRecord>[]
+  eventsIn(from: number, to: number): Readonly<EventRecord>[]
   /** Every record, in canonical NDJSON order (ADR-005). */
-  all(): readonly TelemetryRecord[]
+  all(): readonly Readonly<TelemetryRecord>[]
 }
 
 export interface Simulation {
@@ -646,9 +657,17 @@ export interface TelemetryStore extends TelemetryView {
 
 export type CreateTelemetryStore = (world: World) => TelemetryStore
 
+/**
+ * Built by the ask() dispatcher (T1.16) from its internal AskEnvironment {view, config}
+ * (src/questions/ask.ts) on every call (ADR-006 "Contexto das perguntas").
+ */
 export interface QuestionContext {
   view: TelemetryView
-  /** Lazily simulated fault-free run of the same system with seed `${seed}:lastWeek` (ADR-003). */
+  /**
+   * Lazily simulated fault-free, noise-free run of the same system with seed `${seed}:lastWeek`
+   * (ADR-003 §4), memoized per AskEnvironment and always simulated up to at least `view.now`
+   * (ticks [0, view.now]), so every tick of the current window exists in it (ADR-006).
+   */
   lastWeek(): TelemetryView
 }
 
