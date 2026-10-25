@@ -42,5 +42,5 @@ Fase 1 (Motor) liberada. O critério "dois leitores externos do README" fica reg
 
 | Leitor | Perfil | Entendeu o que é? | Observação |
 | --- | --- | --- | --- |
-| | júnior | | |
-| | sênior | | |
+| não identificado | júnior | ✅ sim | Leitura confirmada pelo Diretor em 2026-10-25 |
+| não identificado | sênior | ✅ sim | Leitura confirmada pelo Diretor em 2026-10-25 |
