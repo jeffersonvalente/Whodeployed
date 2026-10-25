@@ -1,0 +1,46 @@
+{
+  "name": "@whodeployed/engine",
+  "version": "0.1.0-alpha.0",
+  "description": "Deterministic simulator of a small distributed system that generates coherent synthetic telemetry (metrics, logs, traces, events).",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "whodeployed-engine": "dist/cli/main.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json && tsc -p tsconfig.build.cli.json",
+    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.node.json",
+    "lint": "eslint .",
+    "test": "vitest run --coverage",
+    "fixtures": "node scripts/gen-fixtures.mjs",
+    "verify": "node scripts/verify-coherence.mjs",
+    "smoke:pack": "bash scripts/pack-smoke.sh",
+    "dev:cli": "tsx src/cli/main.ts"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@types/node": "^22",
+    "@vitest/coverage-v8": "^2",
+    "eslint": "^9",
+    "tsx": "^4",
+    "typescript": "~5.6",
+    "typescript-eslint": "^8",
+    "vitest": "^2"
+  }
+}

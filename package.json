@@ -7,9 +7,10 @@
   "packageManager": "pnpm@9.12.0",
   "engines": { "node": ">=22" },
   "scripts": {
-    "test": "pnpm -r test --if-present",
-    "lint": "pnpm -r lint --if-present",
-    "validate": "pnpm -r validate --if-present",
-    "build": "pnpm -r build --if-present"
+    "test": "pnpm -r --if-present run test",
+    "lint": "pnpm -r --if-present run lint",
+    "typecheck": "pnpm -r --if-present run typecheck",
+    "validate": "pnpm -r --if-present run validate",
+    "build": "pnpm -r --if-present run build"
   }
 }
