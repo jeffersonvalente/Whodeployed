@@ -28,7 +28,7 @@ export const faultCatalog: FaultCatalog = {
         description: 'Ticks an instance stays up before crashing.',
       },
       restartTicks: {
-        default: 2,
+        default: 3,
         min: 1,
         max: 30,
         integer: true,
