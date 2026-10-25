@@ -36,4 +36,11 @@
 
 ## Decisão do Diretor
 
-<!-- Preencher: APROVADO / REPROVADO, data, leitores do README e o que faltou (se faltou). -->
+**APROVADO** — 2026-10-25, Jefferson Valente.
+
+Fase 1 (Motor) liberada. O critério "dois leitores externos do README" fica registrado como pendência não bloqueante: o Diretor assume o risco e se compromete a coletar as duas leituras antes do Gate 1; o resultado será anotado abaixo.
+
+| Leitor | Perfil | Entendeu o que é? | Observação |
+| --- | --- | --- | --- |
+| | júnior | | |
+| | sênior | | |
