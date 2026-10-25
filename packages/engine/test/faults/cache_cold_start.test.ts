@@ -94,17 +94,17 @@ describe('F-3 row 7 — cold cache after a restart', () => {
     expect(mid).toBeGreaterThan(late)
   })
 
-  // PRD row 7 asks "p95 of >= 1 service that uses redis rises >= 25%". With the ADR-002 topology
-  // the miss costs one postgres call (log-normal 4/25 ms) and postgres latency does not depend on
-  // load, so the ceiling of that rise is ~25% even with a 100% cold cache (issue #39). Left open
-  // until the PM or the Architect decides; the test below pins what the engine does today.
-  it.todo('p95 of >= 1 service that uses the cache rises >= 25% vs baseline (issue #39)')
-
-  it('what the cache users actually show in the window today: p95 up, p50 up >= 25% (issue #39)', () => {
-    const p95 = CACHE_USERS.map((c) => ratio(c, 'p95', START + 6, START + 11))
+  // PRD F-3 row 7, Emenda 1 (issue #39): p50 of >= 1 service that uses the cache rises >= 25% in
+  // the signature window. Every request of a cache user pays the miss (one onMiss call), so the
+  // median moves; p95 is dominated by the own-latency tail and is only pinned as "goes up".
+  it('p50 of >= 1 service that uses the cache rises >= 25% vs baseline in the signature window', () => {
     const p50 = CACHE_USERS.map((c) => ratio(c, 'p50', START + 6, START + 11))
-    for (const r of p95) expect(r).toBeGreaterThan(1)
     expect(Math.max(...p50)).toBeGreaterThanOrEqual(1.25)
+    expect(ratio('auth', 'p50', START + 6, START + 11)).toBeGreaterThanOrEqual(1.25)
+  })
+
+  it('p95 of every cache user also goes up in the window', () => {
+    for (const c of CACHE_USERS) expect(ratio(c, 'p95', START + 6, START + 11)).toBeGreaterThan(1)
   })
 })
 

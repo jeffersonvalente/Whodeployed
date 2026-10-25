@@ -154,7 +154,7 @@ export const faultCatalog: FaultCatalog = {
     targetRule: 'cache',
     params: {
       // 30 ticks (5 min): the signature window (startTick+6..+11) must still be cold, otherwise
-      // nothing outside the cache deviates there (F-4). See issue #39 for the p95 row of F-3.
+      // nothing outside the cache deviates there (F-4, and the p50 condition of F-3 row 7).
       warmupTicks: {
         default: 30,
         min: 1,
