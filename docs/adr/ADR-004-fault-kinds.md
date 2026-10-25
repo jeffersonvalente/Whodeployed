@@ -37,8 +37,8 @@ Linha 6 (alerta ruidoso) é `noise`; linha 8 é composição de duas falhas (F-6
 | `connection_pool_exhaustion` | `payment` | serviço que chama uma `database` | `poolSize` | 20 | 1–500 | sim | connections |
 | | | | `leakPerTick` | 2 | 0–100 | sim | connections/tick |
 | | | | `acquireTimeoutMs` | 2000 | 100–30000 | sim | ms |
-| `bad_deploy` | `catalog` | serviço com ≥ 2 instâncias | `affectedInstances` | 1 | 1–(réplicas−1) | sim | instances |
-| | | | `errorRatio` | 0.6 | 0.05–1 | não | ratio |
+| `bad_deploy` | `gateway` | serviço com ≥ 2 instâncias | `affectedInstances` | 1 | 1–(réplicas−1) | sim | instances |
+| | | | `errorRatio` | 0.9 | 0.05–1 | não | ratio |
 | `slow_dependency` | `postgres` | qualquer componente com chamadores | `addedLatencyMs` | 1500 | 50–30000 | sim | ms |
 | `cache_cold_start` | `redis` | dependência `cache` | `warmupTicks` | 6 | 1–60 | sim | ticks |
 

@@ -25,9 +25,9 @@ const ADR_004: Record<
     leakPerTick: [2, 0, 100, true, 'connections/tick'],
     acquireTimeoutMs: [2000, 100, 30000, true, 'ms'],
   }],
-  bad_deploy: [4, 'catalog', 'service', {
+  bad_deploy: [4, 'gateway', 'service', {
     affectedInstances: [1, 1, 64, true, 'instances'],
-    errorRatio: [0.6, 0.05, 1, false, 'ratio'],
+    errorRatio: [0.9, 0.05, 1, false, 'ratio'],
   }],
   slow_dependency: [5, 'postgres', 'any', {
     addedLatencyMs: [1500, 50, 30000, true, 'ms'],
@@ -79,6 +79,8 @@ const component = { replicas: 3, latencyP50Ms: 5, latencyP99Ms: 20, cpuBasePct: 
 const ids = (name: string) => [0, 1, 2].map((i) => `${name}-${i}`)
 const world: World = {
   services: [
+    // bad_deploy's default target (ADR-004); calls nothing, so the world stays minimal.
+    { ...component, name: 'gateway', calls: [], dbPoolSize: 20, instances: ids('gateway') },
     { ...component, name: 'catalog', calls: [{ target: 'redis', operation: 'cache.get', ratio: 1, timeoutMs: 100, retries: 1, onMiss: { target: 'postgres', operation: 'db.query', timeoutMs: 800, retries: 1 } }], dbPoolSize: 20, instances: ids('catalog') },
     { ...component, name: 'payment', calls: [{ target: 'postgres', operation: 'db.insert', ratio: 1, timeoutMs: 2000, retries: 1 }], dbPoolSize: 20, instances: ids('payment') },
   ],
