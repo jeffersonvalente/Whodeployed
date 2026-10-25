@@ -9,7 +9,8 @@
  *
  * Checks, reported in this order (the first deviation found wins):
  *   1. Format   every line is a JSON object with `type` in {metric, log, span, event} and an
- *               integer `tick` >= 0 (CLI-1, W-4).
+ *               integer `tick` >= 0 (CLI-1, W-4); an optional field is omitted, never `null`
+ *               (ADR-005 "campos opcionais ausentes são omitidos, nunca null", Emenda 1).
  *   2. P-1/P-2  for every metric record (per instance, and the component aggregate without
  *               `instance`), rps / errorPct / p50 / p95 / p99 equal the values recomputed from
  *               the `kind: 'server'` spans of that component (and instance) started in that tick,
@@ -33,6 +34,13 @@ import { readFileSync } from 'node:fs'
 
 const TOLERANCE = 1e-9
 const TYPES = new Set(['metric', 'log', 'span', 'event'])
+/** Optional fields per record type (ADR-005 key order): absent is fine, `null` is a deviation. */
+const OPTIONAL_FIELDS = {
+  metric: ['instance'],
+  span: ['parentId', 'peer'],
+  log: ['traceId', 'attrs'],
+  event: ['instance', 'restart', 'note'],
+}
 const PERCENTILES = [
   ['p50', 50],
   ['p95', 95],
@@ -91,6 +99,11 @@ function parse(text) {
     }
     if (!Number.isInteger(record.tick) || record.tick < 0) {
       fail(`line ${lineNo}: tick ${JSON.stringify(record.tick)} is not an integer >= 0`)
+    }
+    for (const field of OPTIONAL_FIELDS[record.type]) {
+      if (record[field] === null) {
+        fail(`line ${lineNo}: ${record.type} field ${field} is null; an optional field is omitted, never null (ADR-005)`)
+      }
     }
     if (record.type === 'span') {
       for (const field of ['traceId', 'spanId', 'component', 'instance', 'kind', 'status']) {
