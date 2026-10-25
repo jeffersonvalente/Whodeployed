@@ -12,7 +12,8 @@
     "verbatimModuleSyntax": true,
     "declaration": true,
     "skipLibCheck": true,
-    "noEmit": true
+    "noEmit": true,
+    "types": ["node"]
   },
-  "include": ["src"]
+  "include": ["src", "test", "scripts", "vitest.config.ts"]
 }
