@@ -5,12 +5,15 @@
  *   D-4   no non-deterministic source anywhere in src/;
  *   S-5   no scenario ids or titles in src/;
  *   Q-1   no player-level concept in src/.
- * It also proves the ESLint config rejects Math.random in src/ with a sample file (D-4).
+ * It also proves the ESLint config rejects Math.random in src/ with a sample file (D-4), and
+ * that the library tsconfig has no @types/node (SPEC §3.6, ADR-008) by compiling samples.
  */
-import { readFileSync, readdirSync, statSync } from 'node:fs'
+import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { ESLint } from 'eslint'
+import ts from 'typescript'
 import { describe, expect, it } from 'vitest'
 
 const pkgDir = fileURLToPath(new URL('..', import.meta.url))
@@ -166,5 +169,49 @@ describe('lint rules (D-4, CT-3, D-5)', () => {
     expect(await ruleIds("import { a } from 'node:fs'\nexport const b = a\n", 'src/cli/__sample__.ts')).toContain(
       'no-restricted-imports',
     )
+  })
+})
+
+describe('library compiler settings (SPEC §3.6, ADR-008)', () => {
+  /** Type-checks one sample file with the compiler options of `tsconfigName`; returns error codes. */
+  function compileSample(tsconfigName: string, code: string): number[] {
+    const configPath = join(pkgDir, tsconfigName)
+    const { config, error } = ts.readConfigFile(configPath, (path) => ts.sys.readFile(path))
+    if (error) throw new Error(ts.flattenDiagnosticMessageText(error.messageText, '\n'))
+    const parsed = ts.parseJsonConfigFileContent(config, ts.sys, pkgDir, undefined, configPath)
+    const dir = mkdtempSync(join(tmpdir(), 'engine-boundary-'))
+    try {
+      // ESM like the package itself (NodeNext + verbatimModuleSyntax).
+      writeFileSync(join(dir, 'package.json'), '{"type":"module"}')
+      const file = join(dir, 'sample.ts')
+      writeFileSync(file, code)
+      const program = ts.createProgram([file], { ...parsed.options, noEmit: true, typeRoots: [join(pkgDir, 'node_modules', '@types')] })
+      return ts.getPreEmitDiagnostics(program).map((d) => d.code)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }
+
+  const nodeOnly = 'export const dir: string = __dirname\nexport function f(cb: () => void): void { setImmediate(cb) }\n'
+
+  it('library config (typecheck and build) does not load @types/node', () => {
+    for (const name of ['tsconfig.json', 'tsconfig.build.json']) {
+      const raw = JSON.parse(readFileSync(join(pkgDir, name), 'utf8')) as { compilerOptions?: { types?: unknown; lib?: unknown } }
+      expect(raw.compilerOptions?.types ?? [], name).toEqual([])
+      expect(JSON.stringify(raw.compilerOptions?.lib ?? []), name).not.toMatch(/dom/i)
+    }
+  })
+
+  it('rejects Node-only globals under the library config', () => {
+    expect(compileSample('tsconfig.json', nodeOnly)).toContain(2304) // Cannot find name
+    expect(compileSample('tsconfig.build.json', nodeOnly)).toContain(2304)
+  })
+
+  it('accepts plain ES2022 under the library config', () => {
+    expect(compileSample('tsconfig.json', 'export const x: number = Math.max(1, 2)\n')).toEqual([])
+  })
+
+  it('keeps @types/node available to the node-side config (CLI, tests, scripts)', () => {
+    expect(compileSample('tsconfig.node.json', nodeOnly)).toEqual([])
   })
 })
