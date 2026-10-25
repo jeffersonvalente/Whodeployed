@@ -4,6 +4,8 @@
  *
  * - Missing target, startTick and params take the catalog defaults (ADR-004); every documented
  *   param is present in the result, in catalog order, whatever the input order (DET).
+ *   "Missing" means a key that does not exist or is `undefined`; `null` is invalid in every
+ *   field (ADR-004 Emenda 1).
  * - Anything invalid throws EngineError naming the field (`faults[i].kind`, `faults[i].target`,
  *   `faults[i].startTick`, `faults[i].params.<name>`) and listing the valid values.
  * - Target rules: the catalog `targetRule` plus the extra conditions of ADR-004 (a pool fault
@@ -100,6 +102,13 @@ function effectiveSpec(kind: FaultKind, name: string, spec: FaultParamSpec, targ
 const isObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value)
 
+/**
+ * Catalog default only for an absent value (missing key or `undefined`). `null` is a value like
+ * any other and is validated, so it is rejected with the field's error (ADR-004 Emenda 1, #23):
+ * in YAML `target: ~` must not silently become the default target.
+ */
+const orDefault = (value: unknown, fallback: unknown): unknown => (value === undefined ? fallback : value)
+
 function resolveOne(input: unknown, i: number, world: World, components: readonly Component[], called: ReadonlySet<string>): Fault {
   const at = `faults[${i}]`
   if (!isObject(input)) {
@@ -126,7 +135,7 @@ function resolveOne(input: unknown, i: number, world: World, components: readonl
   const entry: FaultCatalogEntry = faultCatalog[kind]
 
   // Target: default from the catalog, must exist, must satisfy the kind's rule.
-  const target = input['target'] ?? entry.defaultTarget
+  const target = orDefault(input['target'], entry.defaultTarget)
   const names = components.map((c) => c.spec.name)
   const component = typeof target === 'string' ? components.find((c) => c.spec.name === target) : undefined
   if (component === undefined) {
@@ -149,7 +158,7 @@ function resolveOne(input: unknown, i: number, world: World, components: readonl
   }
 
   // startTick: integer >= 0.
-  const startTick = input['startTick'] ?? entry.defaultStartTick
+  const startTick = orDefault(input['startTick'], entry.defaultStartTick)
   if (typeof startTick !== 'number' || !Number.isInteger(startTick) || startTick < 0) {
     throw new EngineError({
       code: 'invalid_start_tick',
@@ -161,7 +170,7 @@ function resolveOne(input: unknown, i: number, world: World, components: readonl
   }
 
   // Params: no unknown names; every value a number inside its (effective) range.
-  const rawParams = input['params'] ?? {}
+  const rawParams = orDefault(input['params'], {})
   const paramNames = Object.keys(entry.params)
   if (!isObject(rawParams)) {
     throw new EngineError({
@@ -186,7 +195,7 @@ function resolveOne(input: unknown, i: number, world: World, components: readonl
   const params: Record<string, number> = {}
   for (const name of paramNames) {
     const spec = effectiveSpec(kind, name, entry.params[name] as FaultParamSpec, component)
-    const value = rawParams[name] ?? spec.default
+    const value = orDefault(rawParams[name], spec.default)
     const field = `${at}.params.${name}`
     const range = `${spec.min}..${spec.max}`
     const ok =
