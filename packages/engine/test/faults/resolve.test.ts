@@ -1,6 +1,7 @@
 /**
  * resolveFaults (T1.4): catalog defaults (ADR-004), overrides (CLI-2), every F-7 rejection with
  * EngineError carrying code, field and validValues, the effective affectedInstances limit, and DET.
+ * T1.30: null in target/startTick/params/params.<name> is rejected, never defaulted (ADR-004 Emenda 1, #23).
  */
 import { describe, expect, it } from 'vitest'
 import { EngineError } from '../../src/errors.js'
@@ -184,6 +185,50 @@ describe('invalid input throws EngineError (F-7)', () => {
     for (const v of validValues) expect(error.message).toContain(String(v))
   })
 
+  // ADR-004 Emenda 1 (#23), table "Entrada ausente vs null": null is invalid, never "absent".
+  const nullCases: Case[] = [
+    ['null target', { kind: 'disk_full', target: null }, 'unknown_target', 'faults[0].target', ALL],
+    ['null startTick', { kind: 'disk_full', startTick: null }, 'invalid_start_tick', 'faults[0].startTick', ['integer >= 0']],
+    ['null params.failRatio', { kind: 'disk_full', params: { failRatio: null } }, 'param_out_of_range',
+      'faults[0].params.failRatio', ['0.05..1']],
+    ['null params.poolSize', { kind: 'connection_pool_exhaustion', params: { poolSize: null } }, 'param_out_of_range',
+      'faults[0].params.poolSize', ['1..500']],
+    ['null params.affectedInstances (effective max)', { kind: 'bad_deploy', target: 'leaf', params: { affectedInstances: null } },
+      'param_out_of_range', 'faults[0].params.affectedInstances', ['1..1']],
+    ['null params', { kind: 'disk_full', params: null }, 'unknown_param', 'faults[0].params', ['fillTicks', 'failRatio']],
+  ]
+
+  it.each(nullCases)('%s (null is not absent)', (_label, input, code, field, validValues) => {
+    const error = rejection(input)
+    expect(error.code).toBe(code)
+    expect(error.field).toBe(field)
+    expect(error.validValues).toEqual(validValues)
+    expect(error.received).toBeNull()
+    expect(error.message).toContain(field)
+    for (const v of validValues) expect(error.message).toContain(String(v))
+  })
+
+  it('every param of every kind rejects null with param_out_of_range', () => {
+    for (const kind of faultKinds) {
+      for (const name of Object.keys(faultCatalog[kind].params)) {
+        const error = rejection({ kind, params: { [name]: null } })
+        expect(error.code, `${kind}.${name}`).toBe('param_out_of_range')
+        expect(error.field).toBe(`faults[0].params.${name}`)
+      }
+    }
+  })
+
+  it('a missing key and an explicit undefined still take the catalog default', () => {
+    const expected = resolveFaults([{ kind: 'disk_full' }], world)
+    expect(expected).toStrictEqual([
+      { kind: 'disk_full', target: 'postgres', startTick: 10, params: { fillTicks: 3, failRatio: 0.4 } },
+    ])
+    const explicit = { kind: 'disk_full', target: undefined, startTick: undefined, params: undefined }
+    expect(resolveFaults([explicit as unknown as FaultInput], world)).toStrictEqual(expected)
+    const paramUndefined = { kind: 'disk_full', params: { failRatio: undefined, fillTicks: 5 } }
+    expect(resolveFaults([paramUndefined as unknown as FaultInput], world)[0]?.params).toStrictEqual({ fillTicks: 5, failRatio: 0.4 })
+  })
+
   it('reports the received value', () => {
     expect(rejection({ kind: 'disk_full', target: 'mysql' }).received).toBe('mysql')
     expect(rejection({ kind: 'disk_full', params: { failRatio: 2 } }).received).toBe(2)
@@ -240,5 +285,16 @@ describe('determinism (DET)', () => {
   it('same invalid input => same error', () => {
     const input = { kind: 'disk_full', params: { failRatio: 9 } }
     expect(rejection(input).toJSON()).toStrictEqual(rejection(input).toJSON())
+  })
+
+  it('same null input => same error (T1.30)', () => {
+    for (const input of [
+      { kind: 'disk_full', target: null },
+      { kind: 'disk_full', startTick: null },
+      { kind: 'disk_full', params: null },
+      { kind: 'disk_full', params: { failRatio: null } },
+    ]) {
+      expect(JSON.stringify(rejection(input).toJSON())).toBe(JSON.stringify(rejection(input).toJSON()))
+    }
   })
 })
