@@ -10,15 +10,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # pnpm version comes from "packageManager" in the root package.json.
       - uses: pnpm/action-setup@v4
-        with:
-          version: 9
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm -r lint --if-present
-      - run: pnpm -r test --if-present
-      - run: pnpm -r validate --if-present
-      - run: pnpm -r build --if-present
+      - run: pnpm -r --if-present run lint
+      - run: pnpm -r --if-present run typecheck
+      - run: pnpm -r --if-present run test
+      - run: pnpm -r --if-present run validate
+      - run: pnpm -r --if-present run build

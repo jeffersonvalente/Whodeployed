@@ -1,0 +1,13 @@
+{
+  "//": "Library build: emits dist/ from src/ except src/cli/, without @types/node (inherits types: [] from tsconfig.json).",
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "rootDir": "src",
+    "outDir": "dist",
+    "declaration": true,
+    "sourceMap": false
+  },
+  "include": ["src"],
+  "exclude": ["src/cli"]
+}
