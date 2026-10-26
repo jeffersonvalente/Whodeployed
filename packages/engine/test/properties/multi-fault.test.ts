@@ -2,20 +2,25 @@
  * T1.25 — two simultaneous faults (PRD F-6, D-1, DET; SPEC §7 `faults:` is a list, campaign row 8).
  *
  * `connection_pool_exhaustion` on `payment` + `service_crash_loop` on `catalog`, both with their
- * catalog defaults (ADR-004), in one run. Both F-3 signatures (rows 3 and 1) must show, measured
- * in each fault's signature window (startTick+6 .. startTick+11) against the no-fault baseline,
- * with the seed aggregation of PRD Emenda 2:
+ * catalog defaults (ADR-004 and its Emendas), in one run. Both F-3 signatures (rows 3 and 1) must
+ * show, measured in each fault's signature window (startTick+6 .. startTick+11) against the
+ * no-fault baseline, read with the seed aggregation rule of PRD Emenda 2 through the T1.33 helper
+ * (test/support/signature.ts): window means over the seeds of `signatureSeeds('multi')`
+ * (replaceable with ENGINE_QA_SEEDS, R1), threshold on the mean (R2), 75% floor in every seed
+ * (R3), existence in every seed (R4), ceilings on the mean only (R5). Comparisons are always
+ * window means, never trace or instance equality against the baseline while a fault is active
+ * (ADR-003 §8).
  *
- * - R1: a fixed list of 12 seeds, declared below and not chosen to pass.
- * - R2: the table threshold holds on the mean over the seeds of the window means.
- * - R3: effect-size conditions hold per seed at >= 75% of the required size.
- * - R4: existence conditions hold in every seed (pool reaches poolSize, an error log of the
- *   crashing target in every window tick, a db.acquire wait >= 50% of the root in the p95 trace).
- * - R5: ceilings hold on the mean only (gateway p50 <= 1.5x).
+ * R6 (PRD Emenda 3; ADR-004 Emenda 3): applies only to row 3 (the pool), and only to its three
+ * conditions: p95 of the target, p95 of the gateway and the F-4 pair (gateway, p95). Every
+ * exemption is built by `r6Exemption` with the real kind (`connection_pool_exhaustion`), the real
+ * target (`payment`), the pool window and the faulted runs of this case. Row 1 (the crash loop)
+ * takes no exemption. Connections at poolSize (R4) hold in every seed; the trace clause is per
+ * window tick with >= 1 request of the target. The share of seeds in which `payment` serves no
+ * request in the window is capped at 2% over 1000 consecutive seeds of this case.
  *
- * Comparisons are always window means, never trace or instance equality against the baseline
- * while a fault is active (ADR-003 §8). Defaults are read from the catalog, so a change of
- * default (ADR-004) is picked up here without editing this file.
+ * Defaults are read from the catalog, so a change of default (ADR-004) is picked up here without
+ * editing this file.
  */
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
@@ -30,6 +35,21 @@ import { serializeRecord, toNdjson } from '../../src/sim/serialize.js'
 import { createSimulation, simulate } from '../../src/sim/simulation.js'
 import { buildWorld } from '../../src/world/build.js'
 import { defaultShop } from '../../src/world/default-shop.js'
+import {
+  R6_MIN_SEEDS,
+  assertEligibleF4,
+  assertPass,
+  ceiling,
+  effect,
+  everySeed,
+  exercised,
+  r6Exemption,
+  signatureSeeds,
+  signatureWindow,
+  unexercisedShare,
+  windowMean,
+  type R6Condition,
+} from '../support/signature.js'
 import type { Fault, FaultInput, LogRecord, MetricName, MetricRecord, SpanRecord, TelemetryRecord } from '../../src/types.js'
 
 const POOL = 'connection_pool_exhaustion'
@@ -44,19 +64,17 @@ const INPUTS: readonly FaultInput[] = [
 const POOL_START = faultCatalog[POOL].defaultStartTick
 const CRASH_START = faultCatalog[CRASH].defaultStartTick
 const POOL_SIZE = faultCatalog[POOL].params['poolSize']!.default
-const windowOf = (start: number) => Array.from({ length: 6 }, (_, i) => start + 6 + i)
-const POOL_WINDOW = windowOf(POOL_START)
-const CRASH_WINDOW = windowOf(CRASH_START)
+const POOL_WINDOW = signatureWindow(POOL_START)
+const CRASH_WINDOW = signatureWindow(CRASH_START)
 const TICKS = Math.max(POOL_START, CRASH_START) + 12
 
-/** R1: fixed seed list (>= 10). */
-const SEEDS = Array.from({ length: 12 }, (_, i) => `multi-${i}`)
+/** R1: fixed seed list (`multi-0..11`), or ENGINE_QA_SEEDS. */
+const SEEDS = signatureSeeds('multi')
 
 const pkgDir = fileURLToPath(new URL('../..', import.meta.url))
 const mainTs = join(pkgDir, 'src', 'cli', 'main.ts')
 const verifier = join(pkgDir, 'scripts', 'verify-coherence.mjs')
 const sha = (text: string) => createHash('sha256').update(text, 'utf8').digest('hex')
-const mean = (xs: readonly number[]) => xs.reduce((a, b) => a + b, 0) / xs.length
 
 const faultsOf = (seed: string): Fault[] => resolveFaults(INPUTS, buildWorld(defaultShop, seed))
 const run = (seed: string, ticks = TICKS) => simulate({ system: defaultShop, seed, faults: faultsOf(seed) }, ticks)
@@ -68,22 +86,18 @@ const metricOf = (records: readonly TelemetryRecord[], component: string, tick: 
   return m
 }
 
-/** Window mean of an aggregate metric in one run. */
-const windowMean = (records: readonly TelemetryRecord[], window: readonly number[], component: string, metric: MetricName) =>
-  mean(window.map((tick) => metricOf(records, component, tick)[metric]))
-
 const FAULTED = SEEDS.map((seed) => run(seed))
 const BASE = SEEDS.map((seed) => baseline(seed))
 
-/** Per-seed window means (faulted and baseline) and their R2 means over the seeds. */
-function measure(window: readonly number[], component: string, metric: MetricName) {
-  const perSeed = SEEDS.map((seed, i) => ({
-    seed,
-    fault: windowMean(FAULTED[i]!, window, component, metric),
-    base: windowMean(BASE[i]!, window, component, metric),
-  }))
-  return { perSeed, fault: mean(perSeed.map((s) => s.fault)), base: mean(perSeed.map((s) => s.base)) }
-}
+/** Per-seed window means of an aggregate metric, in seed order. */
+const series = (runs: readonly (readonly TelemetryRecord[])[], window: readonly number[], component: string, metric: MetricName) =>
+  runs.map((records) => windowMean(records, component, metric, window))
+
+/**
+ * R6 exemption of one row-3 condition, for this case: the real kind and target of the pool fault,
+ * the pool window, and the faulted runs of this very case (never another kind or another run).
+ */
+const poolR6 = (condition: R6Condition) => r6Exemption(POOL, condition, FAULTED, POOL_TARGET, POOL_WINDOW)
 
 describe('F-6 — the engine accepts both faults, with their catalog defaults', () => {
   it('resolves two faults of different kinds on different targets, in input order', () => {
@@ -96,83 +110,117 @@ describe('F-6 — the engine accepts both faults, with their catalog defaults', 
   })
 })
 
-describe(`F-6 — F-3 row 3 (${POOL} on ${POOL_TARGET}) shows with the other fault active, ${SEEDS.length} seeds`, () => {
-  it('R4: the connections metric of the target reaches poolSize in >= 1 window tick, in every seed', () => {
+describe(`F-6 — F-3 row 3 (${POOL} on ${POOL_TARGET}) shows with the other fault active, ${SEEDS.length} seeds (R1–R5, R6)`, () => {
+  it('R4: the connections metric of the target reaches poolSize in >= 1 window tick, in every seed (no exemption)', () => {
     const instances = buildWorld(defaultShop, 'x').services.find((s) => s.name === POOL_TARGET)!.instances
-    SEEDS.forEach((seed, i) => {
-      const reached = POOL_WINDOW.some((tick) => instances.some((inst) => metricOf(FAULTED[i]!, POOL_TARGET, tick, inst).connections === POOL_SIZE))
-      expect(reached, seed).toBe(true)
-    })
+    assertPass(
+      everySeed(SEEDS, (_seed, i) => {
+        const reached = POOL_WINDOW.some((tick) => instances.some((inst) => metricOf(FAULTED[i]!, POOL_TARGET, tick, inst).connections === POOL_SIZE))
+        return reached || 'connections never reach poolSize in the window'
+      }),
+      'connections at poolSize',
+    )
   })
 
-  it('target p95: R2 >= 3x the baseline; R3 >= 2.5x in every seed', () => {
-    const p95 = measure(POOL_WINDOW, POOL_TARGET, 'p95')
-    expect(p95.fault).toBeGreaterThanOrEqual(3 * p95.base)
-    for (const s of p95.perSeed) expect(s.fault, s.seed).toBeGreaterThanOrEqual(2.5 * s.base)
+  it('R3: p95 of the target >= 3x the baseline on the mean, >= 2.5x in every exercised seed (R6)', () => {
+    assertPass(
+      effect(series(FAULTED, POOL_WINDOW, POOL_TARGET, 'p95'), series(BASE, POOL_WINDOW, POOL_TARGET, 'p95'), { ratioAtLeast: 3 }, SEEDS, poolR6('targetP95')),
+      'target p95',
+    )
   })
 
-  it('R4: in every seed, the p95 trace of the target once the pool is exhausted has a db.acquire wait >= 50% of the root', () => {
-    for (const seed of SEEDS) {
-      const sim = createSimulation({ system: defaultShop, seed, faults: faultsOf(seed) })
-      sim.advance(POOL_WINDOW[0]! - 1)
-      let checked = 0
-      for (const tick of POOL_WINDOW) {
-        sim.advance(1)
-        // Exhausted = every target instance reports connections at poolSize (read from telemetry).
-        const instances = sim.telemetry().metricsOf(POOL_TARGET, tick, tick).filter((m) => m.instance !== undefined)
-        if (!instances.every((m) => m.connections === POOL_SIZE)) continue
-        const signal = trace({ kind: 'trace', service: POOL_TARGET, percentile: 95 }, { view: sim.telemetry(), lastWeek: () => sim.telemetry() })
-        if (signal.focusSpanId === null) continue
-        const focus = signal.spans.find((s) => s.spanId === signal.focusSpanId) as SpanRecord
-        const root = signal.spans.find((s) => s.parentId === undefined) as SpanRecord
-        const waits = signal.spans.filter((s) => s.parentId === focus.spanId && s.operation === ACQUIRE_OPERATION && s.kind === 'internal')
-        const longest = Math.max(0, ...waits.map((s) => s.durationMs))
-        expect(longest, `${seed} tick ${tick}`).toBeGreaterThanOrEqual(0.5 * focus.durationMs)
-        expect(longest, `${seed} tick ${tick}`).toBeGreaterThanOrEqual(0.5 * root.durationMs)
-        checked += 1
-      }
-      expect(checked, seed).toBeGreaterThanOrEqual(1)
-    }
+  it('R4: in each window tick in which the target serves >= 1 request, a db.acquire span of its p95 trace is >= 50% of the root, in every seed', () => {
+    assertPass(
+      everySeed(SEEDS, (seed, i) => {
+        const sim = createSimulation({ system: defaultShop, seed, faults: faultsOf(seed) })
+        sim.advance(POOL_WINDOW[0]! - 1)
+        let checked = 0
+        for (const tick of POOL_WINDOW) {
+          sim.advance(1)
+          const aggregate = sim.telemetry().metricsOf(POOL_TARGET, tick, tick).find((m) => m.instance === undefined)!
+          if (aggregate.rps === 0) continue
+          const signal = trace({ kind: 'trace', service: POOL_TARGET, percentile: 95 }, { view: sim.telemetry(), lastWeek: () => sim.telemetry() })
+          if (signal.focusSpanId === null) return `tick ${tick}: target has requests but no p95 trace`
+          const focus = signal.spans.find((s) => s.spanId === signal.focusSpanId) as SpanRecord
+          const root = signal.spans.find((s) => s.parentId === undefined) as SpanRecord
+          const waits = signal.spans.filter((s) => s.parentId === focus.spanId && s.operation === ACQUIRE_OPERATION && s.kind === 'internal')
+          const longest = Math.max(0, ...waits.map((s) => s.durationMs))
+          // "Root" read both ways: the target's own server span and the root of the whole trace.
+          if (longest < 0.5 * focus.durationMs) return `tick ${tick}: db.acquire ${longest} ms < 50% of the target span ${focus.durationMs} ms`
+          if (longest < 0.5 * root.durationMs) return `tick ${tick}: db.acquire ${longest} ms < 50% of the root ${root.durationMs} ms`
+          checked += 1
+        }
+        // The aggregate rps and the server spans agree: an exercised seed has >= 1 tick checked.
+        const ex = exercised(FAULTED[i]!, POOL_TARGET, POOL_WINDOW)
+        if (ex !== checked > 0) return `exercised ${ex} but ${checked} ticks with requests`
+        return true
+      }),
+      'db.acquire share of the p95 trace',
+    )
   })
 
-  it('indirect, gateway p95: R2 >= +25%; R3 >= +18.75% in every seed', () => {
-    const p95 = measure(POOL_WINDOW, 'gateway', 'p95')
-    expect(p95.fault).toBeGreaterThanOrEqual(1.25 * p95.base)
-    for (const s of p95.perSeed) expect(s.fault, s.seed).toBeGreaterThanOrEqual(1.1875 * s.base)
+  it('R3: gateway p95 rises >= 25% on the mean, >= 18.75% in every exercised seed (R6)', () => {
+    assertPass(
+      effect(series(FAULTED, POOL_WINDOW, 'gateway', 'p95'), series(BASE, POOL_WINDOW, 'gateway', 'p95'), { riseAtLeast: 0.25 }, SEEDS, poolR6('gatewayP95')),
+      'gateway p95',
+    )
   })
 
-  it('indirect, gateway p50: R5 <= 1.5x the baseline on the mean (the aggregate hides the bottleneck)', () => {
-    const p50 = measure(POOL_WINDOW, 'gateway', 'p50')
-    expect(p50.fault).toBeLessThanOrEqual(1.5 * p50.base)
+  it('R5: gateway p50 stays <= 1.5x the baseline on the mean (the aggregate hides the bottleneck)', () => {
+    assertPass(ceiling(series(FAULTED, POOL_WINDOW, 'gateway', 'p50'), series(BASE, POOL_WINDOW, 'gateway', 'p50'), { ratioAtMost: 1.5 }, SEEDS), 'gateway p50')
+  })
+
+  it('F-4: fixed eligible pair of row 3 (gateway, p95), in every exercised seed (E1–E4, R6)', () => {
+    const r = assertEligibleF4({ component: 'gateway', metric: 'p95' }, BASE, FAULTED, POOL_TARGET, { window: POOL_WINDOW, seeds: SEEDS, exempt: poolR6('f4Pair') })
+    expect(r.direction).toBe('rise')
   })
 })
 
-describe(`F-6 — F-3 row 1 (${CRASH} on ${CRASH_TARGET}) shows with the other fault active, ${SEEDS.length} seeds`, () => {
-  it('target: served RPS R2 <= 50% (R3 <= 62.5% per seed), or error % R2 >= +20 p.p. (R3 >= +15 p.p.)', () => {
-    const rps = measure(CRASH_WINDOW, CRASH_TARGET, 'rps')
-    const err = measure(CRASH_WINDOW, CRASH_TARGET, 'errorPct')
-    expect(rps.fault <= 0.5 * rps.base || err.fault >= err.base + 20).toBe(true)
-    SEEDS.forEach((seed, i) => {
-      const r = rps.perSeed[i]!
-      const e = err.perSeed[i]!
-      expect(r.fault <= 0.625 * r.base || e.fault >= e.base + 15, seed).toBe(true)
-    })
+describe(`F-6 — F-3 row 1 (${CRASH} on ${CRASH_TARGET}) shows with the other fault active, ${SEEDS.length} seeds (R1–R5, no R6)`, () => {
+  // Row 1 offers "error % >= baseline + 20 p.p. OR served RPS <= 50% of the baseline". As in the
+  // T1.34 suite, the branch is declared and read the same way in every seed: the crashing target
+  // never reports a request error itself (callers see `connection refused`), so it is RPS.
+  it('target: served RPS <= 0.5x on the mean, <= 0.625x in every seed (R2, R3)', () => {
+    assertPass(
+      effect(series(FAULTED, CRASH_WINDOW, CRASH_TARGET, 'rps'), series(BASE, CRASH_WINDOW, CRASH_TARGET, 'rps'), { ratioAtMost: 0.5 }, SEEDS),
+      `${CRASH_TARGET} rps`,
+    )
   })
 
   it('R4: >= 1 error log of the target in every tick of the window, in every seed', () => {
-    SEEDS.forEach((seed, i) => {
-      for (const tick of CRASH_WINDOW) {
-        const found = FAULTED[i]!.some((r): r is LogRecord => r.type === 'log' && r.component === CRASH_TARGET && r.tick === tick && r.level === 'error')
-        expect(found, `${seed} tick ${tick}`).toBe(true)
-      }
-    })
+    assertPass(
+      everySeed(SEEDS, (_seed, i) => {
+        const missing = CRASH_WINDOW.filter(
+          (tick) => !FAULTED[i]!.some((r): r is LogRecord => r.type === 'log' && r.component === CRASH_TARGET && r.tick === tick && r.level === 'error'),
+        )
+        return missing.length === 0 || `no error log of ${CRASH_TARGET} at ticks ${missing.join(', ')}`
+      }),
+      `${CRASH_TARGET} error logs`,
+    )
   })
 
-  it('indirect, error % of the direct caller (gateway): R2 >= +5 p.p.; R3 >= +3.75 p.p. in every seed', () => {
-    const err = measure(CRASH_WINDOW, 'gateway', 'errorPct')
-    expect(err.fault).toBeGreaterThanOrEqual(err.base + 5)
-    for (const s of err.perSeed) expect(s.fault, s.seed).toBeGreaterThanOrEqual(s.base + 3.75)
+  it('indirect and F-4: fixed pair (gateway, errorPct) >= +5 p.p. on the mean, >= +3.75 p.p. in every seed (E1–E4)', () => {
+    const r = assertEligibleF4({ component: 'gateway', metric: 'errorPct' }, BASE, FAULTED, CRASH_TARGET, { window: CRASH_WINDOW, seeds: SEEDS })
+    expect(r.direction).toBe('rise')
+    expect(r.result.exemptSeeds).toEqual([])
   })
+})
+
+/** R6 ceiling for this case: 1000 consecutive seeds; only faulted runs are needed. */
+const R6_SEEDS = Array.from({ length: R6_MIN_SEEDS }, (_, i) => `multi-r6-${i}`)
+const R6_TIMEOUT_MS = 300_000
+
+describe('R6 — share of seeds in which payment serves no request in the window <= 2% (1000 consecutive seeds, this F-6 case, PRD Emenda 3)', () => {
+  it(
+    `${POOL} on ${POOL_TARGET} + ${CRASH} on ${CRASH_TARGET}`,
+    () => {
+      const flags = R6_SEEDS.map((seed) => exercised(run(seed), POOL_TARGET, POOL_WINDOW))
+      const r = unexercisedShare(R6_SEEDS, flags)
+      assertPass(r, 'R6 unexercised share')
+      expect(r.seeds).toBe(1000)
+    },
+    R6_TIMEOUT_MS,
+  )
 })
 
 describe('F-6 — the combined run stays coherent and invisible before startTick', () => {
