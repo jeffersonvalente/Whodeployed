@@ -8,7 +8,11 @@ Progression is not about unlocking tools. Every signal (metrics, logs, traces, d
 
 ## Status
 
-🚧 **Phase 0 — Foundation.** There is no game yet. There is a spec, a plan and an agent chain that builds it. Follow along in [`SPEC.md`](./SPEC.md) and the gates in [`docs/gates/`](./docs/gates/).
+🚧 **Phase 2 — Text prototype.** There is no game yet.
+
+Phase 1 is done: the **engine** is out as [`engine-v0.1.0`](https://github.com/jeffersonvalente/Whodeployed/releases/tag/engine-v0.1.0). It is a deterministic simulator of the fictional shop with 6 fault kinds, and it generates coherent metrics, logs, traces and deploy events, the same bytes for the same seed. It runs on its own, as a command-line tool that writes NDJSON or as a TypeScript library; see [`packages/engine/README.md`](./packages/engine/README.md).
+
+Next is a plain-HTML prototype of 3 incidents, tested with a junior engineer before any game UI is built. Follow along in [`SPEC.md`](./SPEC.md) and the gates in [`docs/gates/`](./docs/gates/).
 
 ## Who is this for
 
@@ -43,7 +47,12 @@ apps/web/                the game (React, Vite, GitHub Pages)
 
 ## Running
 
-Nothing to run yet. Phase 1 ships the engine as a CLI; Phase 3 ships the game as a static site.
+The game is not playable yet; Phase 3 ships it as a static site. The engine runs today (Node.js 22 or later):
+
+```sh
+npm install https://github.com/jeffersonvalente/Whodeployed/releases/download/engine-v0.1.0/whodeployed-engine-0.1.0.tgz
+npx whodeployed-engine simulate --seed demo --ticks 60 --fault connection_pool_exhaustion | head -n 3
+```
 
 ## Contributing
 

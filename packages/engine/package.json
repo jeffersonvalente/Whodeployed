@@ -1,6 +1,6 @@
 {
   "name": "@whodeployed/engine",
-  "version": "0.1.0-alpha.0",
+  "version": "0.1.0",
   "description": "Deterministic simulator of a small distributed system that generates coherent synthetic telemetry (metrics, logs, traces, events).",
   "license": "Apache-2.0",
   "type": "module",

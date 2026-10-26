@@ -41,11 +41,16 @@ tarball (`.tgz`).
 
 ### From a GitHub Release
 
-Releases of the repository carry the engine tarball as an asset; until the first one is out,
-build the tarball yourself (next section). Download the `.tgz` from the
+Each engine release of the repository (tag `engine-v<version>`) carries the tarball as an
+asset. Download the `.tgz` from the
 [releases page](https://github.com/jeffersonvalente/Whodeployed/releases) and install it into
 your project with `npm install ./whodeployed-engine-<version>.tgz`, or give `npm install` the
-asset URL directly.
+asset URL directly. For 0.1.0:
+
+```sh
+npm install https://github.com/jeffersonvalente/Whodeployed/releases/download/engine-v0.1.0/whodeployed-engine-0.1.0.tgz
+npx whodeployed-engine --help
+```
 
 ### From a local tarball
 
@@ -68,8 +73,9 @@ installed.
 ### The tarball in `packages/engine/dist/`
 
 CI packs the engine into `packages/engine/dist/` and keeps the tarball as the
-`whodeployed-engine-tarball` artifact of each workflow run (Actions tab of the repository; the
-download is a zip holding the `.tgz`). A release asset is packed the same way. To produce the
+`whodeployed-engine-<version>` artifact of each workflow run, with `<version>` taken from
+`packages/engine/package.json` (for example `whodeployed-engine-0.1.0`; Actions tab of the
+repository; the download is a zip holding the `.tgz`). A release asset is packed the same way. To produce the
 same file locally, from the repository root:
 
 ```sh
@@ -109,6 +115,28 @@ whodeployed-engine --help | simulate --help
 `simulate` writes ticks `[0, ticks)` as NDJSON to stdout. `--seed` and `--ticks` (an integer
 in 1..100000) are required. Without `--fault` you get the baseline: the shop with no fault.
 To save the output, redirect stdout; there is no output-file flag.
+
+### Practical limit of `--ticks`
+
+`--ticks` accepts up to 100000, but the CLI builds the whole run in memory before it writes
+the first line, so long runs are bounded by the Node.js heap, not by that range. Stay at or
+below **10000 ticks** (about 28 hours of game time). Measured in 0.1.0 with Node.js 22 and
+its default heap limit (about 4 GB), seed `limit`:
+
+| `--ticks` | Fault | Time | Peak memory (RSS) | Output | Exit |
+| --- | --- | --- | --- | --- | --- |
+| 360 | none | 0.4 s | 0.15 GB | 12 MB | 0 |
+| 10000 | none | 8.7 s | 1.4 GB | 341 MB | 0 |
+| 10000 | `disk_full` | 10.6 s | 1.8 GB | 454 MB | 0 |
+| 30000 | none | 30 s | 3.9 GB | 1.0 GB | 0 |
+| 30000 | `disk_full` | 49 s | 4.3 GB | 1.4 GB | 0 |
+| 40000 | `disk_full` | 64 s | 4.5 GB | nothing | 134 |
+
+The cost depends on the faults (`disk_full` and `slow_dependency` write the most). Past about
+30000 ticks the process can run out of heap: Node.js aborts with
+`FatalProcessOutOfMemory` on stderr, exit code 134, and stdout stays empty. Whether to lower
+the accepted range or stream the output tick by tick is tracked in
+[issue #24](https://github.com/jeffersonvalente/Whodeployed/issues/24).
 
 ### The 6 fault kinds
 
