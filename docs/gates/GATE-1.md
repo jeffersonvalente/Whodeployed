@@ -285,3 +285,6 @@ Não bloqueia o gate, mas precisa de dono antes do Release: a divergência 2 (ve
 
 ## Decisão do Diretor
 
+**APROVADO** — 2026-10-26, Jefferson Valente.
+
+APROVADO. PUB-4 dispensada nesta fase: a parte ‘disponível publicamente’ é responsabilidade do Release e só pode cumprir-se após o gate; o artifact de CI verificado byte a byte substitui o critério para fins de gate. O critério migra para docs/release/v0.1-engine.md. Pendência não bloqueante: issue #24.
