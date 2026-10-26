@@ -82,7 +82,7 @@ describe('overrides (CLI-2) and several faults (F-6)', () => {
       kind: 'connection_pool_exhaustion',
       target: 'catalog',
       startTick: 0,
-      params: { poolSize: 5, leakPerTick: 2, acquireTimeoutMs: 2000 },
+      params: { poolSize: 5, leakPerTick: 4, acquireTimeoutMs: 2000 },
     })
   })
 

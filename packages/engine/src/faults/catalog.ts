@@ -81,7 +81,9 @@ export const faultCatalog: FaultCatalog = {
         description: 'Connection pool size per instance of the target (overrides dbPoolSize).',
       },
       leakPerTick: {
-        default: 2,
+        // 4 (ADR-004 Emenda 2): with poolSize 20 the pool is exhausted from s = 4, so the whole
+        // signature window (s = 6..11) is exhausted in every seed: leakedAt(6) >= poolSize.
+        default: 4,
         min: 0,
         max: 100,
         integer: true,
