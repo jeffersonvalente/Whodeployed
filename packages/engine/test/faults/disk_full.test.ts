@@ -1,5 +1,5 @@
 /**
- * T1.18 / T1.36 — fault `disk_full` (ADR-004 and its Emenda 2; PRD F-1, F-2, F-3 row 2, F-4; DET).
+ * T1.18 / T1.36 — fault `disk_full` (ADR-004 and its Emendas 2 and 3; PRD F-1, F-2, F-3 row 2, F-4; DET).
  *
  * Signature assertions follow the seed aggregation rule R1–R5 and the F-4 eligibility rules
  * E1–E4 (PRD Emenda 2) through test/support/signature.ts: window means over the seeds of
@@ -31,7 +31,7 @@ const WINDOW = signatureWindow(START)
 const TICKS = START + 12
 const SEEDS = signatureSeeds('disk')
 /**
- * The fixed dependent of F-3 row 2 and pair of F-4 (ADR-004 Emenda 2 §2): orders-worker calls
+ * The fixed dependent of F-3 row 2 and pair of F-4 (ADR-004 Emenda 2 §2, Emenda 3): orders-worker calls
  * postgres directly (retries: 2), with no cache on the path.
  */
 const DEPENDENT = 'orders-worker'
@@ -151,8 +151,8 @@ describe(`F-3 row 2 / F-4 — ${SEEDS.length} seeds, defaults (R1–R5, E1–E4)
   const base = SEEDS.map((seed) => baseline(seed))
   const errorPct = (runs: readonly (readonly TelemetryRecord[])[], component: string) => runs.map((records) => windowMean(records, component, 'errorPct', WINDOW))
 
-  it('default failRatio is 0.7 and fillTicks 3 (ADR-004 Emenda 2 §2): the whole window is full', () => {
-    expect(FAIL_RATIO).toBe(0.7)
+  it('default failRatio is 0.9 and fillTicks 3 (ADR-004 Emenda 3): the whole window is full', () => {
+    expect(FAIL_RATIO).toBe(0.9)
     const fillTicks = faultCatalog[KIND].params['fillTicks']!.default
     expect(fillTicks).toBe(3)
     expect(WINDOW[0]! - START).toBeGreaterThanOrEqual(fillTicks)
