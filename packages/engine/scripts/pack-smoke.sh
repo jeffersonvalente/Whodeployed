@@ -13,6 +13,11 @@
 # The pack command is `pnpm --dir packages/engine pack`: pnpm 9.12 (the root `packageManager`)
 # rejects `pnpm --filter <pkg> pack` with "Unknown option: 'recursive'". Same package, same tarball.
 # Needs Node >= 22 (root `engines`). Exits 0 when everything matches, 1 otherwise.
+#
+# Usage:
+#   pack-smoke.sh                     build, pack into a temporary directory, then check it
+#   pack-smoke.sh --tarball <file>    skip build and pack; run checks 2 and 3 on <file>
+#                                     (used by pack-artifact.sh on packages/engine/dist/*.tgz)
 set -euo pipefail
 
 ENGINE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -28,20 +33,38 @@ NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]')"
 [[ "$NODE_MAJOR" -ge 22 ]] || die "Node >= 22 required (root engines), found $(node --version)"
 echo "pack-smoke: node $(node --version), npm $(npm --version)"
 
+GIVEN_TARBALL=""
+case "${1:-}" in
+  "") ;;
+  --tarball)
+    [[ $# -eq 2 && -n "$2" ]] || die "usage: pack-smoke.sh [--tarball <file>]"
+    [[ -f "$2" ]] || die "tarball not found: $2"
+    GIVEN_TARBALL="$(cd "$(dirname "$2")" && pwd)/$(basename "$2")"
+    ;;
+  *) die "usage: pack-smoke.sh [--tarball <file>]" ;;
+esac
+
 if command -v pnpm >/dev/null 2>&1; then PNPM=(pnpm); else PNPM=(corepack pnpm); fi
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 case "$WORK/" in "$REPO_DIR"/*) die "temporary directory $WORK is inside the repository" ;; esac
 
-"${PNPM[@]}" --filter ./packages/engine build >/dev/null
-"${PNPM[@]}" --dir packages/engine pack --pack-destination "$WORK/pack" >/dev/null
-shopt -s nullglob
-tarballs=("$WORK"/pack/*.tgz)
-shopt -u nullglob
-[[ ${#tarballs[@]} -eq 1 ]] || die "expected 1 tarball, found ${#tarballs[@]}"
-TARBALL="${tarballs[0]}"
-echo "pack-smoke: packed $(basename "$TARBALL") ($(wc -c <"$TARBALL") bytes)"
+if [[ -n "$GIVEN_TARBALL" ]]; then
+  # The caller built and packed; $CLI below must be the same build the tarball holds.
+  [[ -f packages/engine/dist/cli/main.js ]] || die "packages/engine/dist/cli/main.js missing: build first"
+  TARBALL="$GIVEN_TARBALL"
+  echo "pack-smoke: checking $TARBALL ($(wc -c <"$TARBALL") bytes)"
+else
+  "${PNPM[@]}" --filter ./packages/engine build >/dev/null
+  "${PNPM[@]}" --dir packages/engine pack --pack-destination "$WORK/pack" >/dev/null
+  shopt -s nullglob
+  tarballs=("$WORK"/pack/*.tgz)
+  shopt -u nullglob
+  [[ ${#tarballs[@]} -eq 1 ]] || die "expected 1 tarball, found ${#tarballs[@]}"
+  TARBALL="${tarballs[0]}"
+  echo "pack-smoke: packed $(basename "$TARBALL") ($(wc -c <"$TARBALL") bytes)"
+fi
 
 # --- PUB-2: tarball contents -------------------------------------------------------------
 tar -tzf "$TARBALL" | sort >"$WORK/entries.txt"

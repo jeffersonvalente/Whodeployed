@@ -28,3 +28,14 @@ jobs:
         run: bash packages/engine/scripts/ci-engine.sh
       - name: Engine pack smoke (PUB-1, PUB-2)
         run: bash packages/engine/scripts/pack-smoke.sh
+      # T1.29 (ADR-009): `pnpm --dir packages/engine pack --pack-destination dist/` after
+      # pack-smoke.sh, on a dist/ with no .tgz; checks PUB-2 and the isolated install.
+      - name: Engine tarball artifact (PUB-2, PUB-4 via CI artifact)
+        run: bash packages/engine/scripts/pack-artifact.sh
+      # Not a GitHub Release: the tarball is a workflow artifact only (ADR-009).
+      - name: Upload engine tarball
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: whodeployed-engine-tarball
+          path: packages/engine/dist/*.tgz
+          if-no-files-found: error
