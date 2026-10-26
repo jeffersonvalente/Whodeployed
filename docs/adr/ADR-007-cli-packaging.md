@@ -70,3 +70,11 @@ Implementação de tudo abaixo: T1.23.
 - **Exit 2 = todo `EngineError`:** qualquer `EngineError`, de qualquer código (`usage`, `invalid_seed` — seed vazia rejeitada por `buildWorld` —, `invalid_system`, os de F-7, ...), sai com exit 2, mensagem no stderr, stdout vazio. Qualquer outro erro (invariante interna, ADR-002 §7) sai com exit 1.
 - **`params` sem protótipo (#22):** `parseFaultSpec` monta `params` com `Object.create(null)`, para que `--fault kind:__proto__=1` chegue a `resolveFaults` e falhe como `unknown_param` (ADR-004, Emenda 1). Um caso de teste.
 - **Forma dos inteiros:** `--ticks` e `startTick` aceitam inteiro decimal com sinal opcional (`/^[+-]?\d+$/`); `--ticks +5` é 5 e `--ticks 007` é 7. Isso não afeta determinismo (o valor é o mesmo) e é a mesma regra de `startTick`; a faixa `1..100000` continua valendo. Não muda.
+
+## Emenda 2 — 2026-10-25 (issue #58)
+
+**Fato (reproduzido pelo Arquiteto):** com o pnpm fixado em `packageManager` (`pnpm@9.12.0`), `pnpm --filter ./packages/engine pack` sai com `ERROR Unknown option: 'recursive'`; `pnpm --dir packages/engine pack` gera `whodeployed-engine-0.1.0-alpha.0.tgz`. É o mesmo pacote e o mesmo tarball, e é o que `scripts/pack-smoke.sh` (T1.26) e o README (T1.28) já usam.
+
+**Decisão:** o comando de empacotamento do motor é **`pnpm --dir packages/engine pack`** (opção (a) de #58). O pnpm não é atualizado: trocar `packageManager` muda o lockfile e a stack fixada na ADR-001, só para um comando que já tem forma equivalente. A convenção do PRD ("comandos pnpm usam filtro por caminho") continua valendo para `build`, `test`, `lint` etc.; `pack` é a exceção, porque no pnpm 9.12 ele não é um comando recursivo.
+
+**Quem altera o texto:** PUB-1 em `docs/prd/FASE-1.md` é do PM; a linha "O asset é o tarball gerado por `pnpm --filter ./packages/engine pack`" da ADR-009 é do Diretor (decisor da ADR-009). O texto proposto para os dois está no PR desta emenda. Enquanto não mudarem, o QA lê o comando de PUB-1 e o da ADR-009 como `pnpm --dir packages/engine pack`, por esta emenda. Nenhum código muda.
