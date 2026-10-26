@@ -1,9 +1,13 @@
 /**
- * T1.17 — fault `service_crash_loop` (ADR-004; PRD F-1, F-2, F-3 row 1, F-4; DET).
+ * T1.17, T1.34 — fault `service_crash_loop` (ADR-004 and its Emenda 2; PRD F-1, F-2, F-3 row 1,
+ * F-4; DET).
  *
- * Signature assertions compare window means over >= 10 seeds (signature window = ticks
- * startTick+6 .. startTick+11), never per-trace or per-instance equality against the baseline
- * while the fault is active (ADR-003 §8).
+ * Signature assertions read window means (signature window = ticks startTick+6 .. startTick+11)
+ * over the seeds of `signatureSeeds` with the aggregation rule R1–R5 of PRD Emenda 2, through the
+ * T1.33 helper: size-of-effect conditions on the mean (R2) and with a 75% floor in every seed (R3),
+ * existence conditions in every seed (R4). Never per-trace or per-instance equality against the
+ * baseline while the fault is active (ADR-003 §8). QA can repeat the run with another seed list
+ * through ENGINE_QA_SEEDS (R1).
  */
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
@@ -19,14 +23,15 @@ import { serializeRecord, toNdjson } from '../../src/sim/serialize.js'
 import { simulate } from '../../src/sim/simulation.js'
 import { buildWorld } from '../../src/world/build.js'
 import { defaultShop } from '../../src/world/default-shop.js'
-import type { FaultInput, LogRecord, MetricName, MetricRecord, SystemDefinition, TelemetryRecord, TickEffect } from '../../src/types.js'
+import type { FaultInput, LogRecord, MetricRecord, SystemDefinition, TelemetryRecord, TickEffect } from '../../src/types.js'
+import { assertEligibleF4, assertPass, effect, everySeed, signatureSeeds, signatureWindow, windowMean } from '../support/signature.js'
 
 const KIND = 'service_crash_loop'
 const START = faultCatalog[KIND].defaultStartTick
 const TARGET = faultCatalog[KIND].defaultTarget
-const WINDOW = Array.from({ length: 6 }, (_, i) => START + 6 + i)
+const WINDOW = signatureWindow(START)
 const TICKS = START + 12
-const SEEDS = Array.from({ length: 12 }, (_, i) => `crash-${i}`)
+const SEEDS = signatureSeeds('crash')
 
 const pkgDir = fileURLToPath(new URL('../..', import.meta.url))
 const verifier = join(pkgDir, 'scripts', 'verify-coherence.mjs')
@@ -43,13 +48,6 @@ const aggregate = (records: readonly TelemetryRecord[], component: string, tick:
   const m = records.find((r): r is MetricRecord => r.type === 'metric' && r.component === component && r.instance === undefined && r.tick === tick)
   if (m === undefined) throw new Error(`no aggregate metric for ${component} at ${tick}`)
   return m
-}
-
-/** Mean of an aggregate metric over the signature window and over all seeds. */
-function windowMean(runs: readonly (readonly TelemetryRecord[])[], component: string, metric: MetricName): number {
-  let total = 0
-  for (const records of runs) for (const tick of WINDOW) total += aggregate(records, component, tick)[metric]
-  return total / (runs.length * WINDOW.length)
 }
 
 const downOf = (effect: TickEffect | undefined): string[] => effect?.down ?? []
@@ -97,6 +95,20 @@ describe('module semantics (ADR-004)', () => {
         for (const i of instances) if (!down.includes(i)) upTicks.set(i, (upTicks.get(i) ?? 0) + 1)
       }
       for (const i of instances) expect(upTicks.get(i)).toBe(uptimeTicks * 5)
+    }
+  })
+
+  it('with the defaults and 3 replicas: in 3 of every 4 ticks exactly one instance is up, in 1 of every 4 none (ADR-004 Emenda 2 §4)', () => {
+    const { uptimeTicks, restartTicks } = fault!.params as { uptimeTicks: number; restartTicks: number }
+    expect(uptimeTicks + restartTicks).toBe(4)
+    const instances = world.services.find((s) => s.name === TARGET)!.instances
+    expect(instances).toHaveLength(3)
+    for (const seed of SEEDS) {
+      const hooks = serviceCrashLoop.activate(fault!, world, createRngFactory(seed))
+      for (let cycle = 0; cycle < 5; cycle++) {
+        const upCounts = Array.from({ length: 4 }, (_, k) => instances.length - downOf(hooks.onTick?.({ tick: START + cycle * 4 + k, world })).length)
+        expect([...upCounts].sort(), seed).toEqual([0, 1, 1, 1])
+      }
     }
   })
 
@@ -161,36 +173,43 @@ describe('F-2 — before startTick the fault is invisible', () => {
   })
 })
 
-describe(`F-3 row 1 — signature in the window, ${SEEDS.length} seeds, defaults`, () => {
+describe(`F-3 row 1 and F-4 — signature in the window, ${SEEDS.length} seeds, defaults (R1–R5)`, () => {
   const faulted = SEEDS.map((seed) => run(seed))
   const base = SEEDS.map((seed) => baseline(seed))
+  /** Per-seed window means of an aggregate metric: [faulted, baseline]. */
+  const series = (component: string, metric: 'rps' | 'errorPct') =>
+    [faulted.map((r) => windowMean(r, component, metric, WINDOW)), base.map((r) => windowMean(r, component, metric, WINDOW))] as const
 
-  it('target: served RPS <= 50% of the baseline (or error % >= baseline + 20 p.p.)', () => {
-    const rps = { base: windowMean(base, TARGET, 'rps'), fault: windowMean(faulted, TARGET, 'rps') }
-    const err = { base: windowMean(base, TARGET, 'errorPct'), fault: windowMean(faulted, TARGET, 'errorPct') }
-    expect(rps.fault <= 0.5 * rps.base || err.fault >= err.base + 20).toBe(true)
-    // The engine meets the RPS branch on its own (the target never reports errors itself).
-    expect(rps.fault).toBeLessThanOrEqual(0.5 * rps.base)
+  // Row 1 offers "error % >= baseline + 20 p.p. OR served RPS <= 50% of the baseline". The
+  // alternative is declared here and read the same way in every seed (T1.34): the target never
+  // reports a request error itself (callers see `connection refused`), so it is the RPS branch.
+  const TARGET_BRANCH = 'rps <= 50%' as const
+
+  it(`target (${TARGET_BRANCH}): served RPS <= 0.5x on the mean, <= 0.625x in every seed (R2, R3)`, () => {
+    expect(TARGET_BRANCH).toBe('rps <= 50%')
+    const [f, b] = series(TARGET, 'rps')
+    assertPass(effect(f, b, { ratioAtMost: 0.5 }, SEEDS), `${TARGET} rps`)
   })
 
-  it('target: >= 1 error log in every tick of the window, in every seed', () => {
-    for (const records of faulted) {
-      for (const tick of WINDOW) {
-        expect(records.some((r): r is LogRecord => r.type === 'log' && r.component === TARGET && r.tick === tick && r.level === 'error')).toBe(true)
-      }
-    }
+  it('target: >= 1 error log in every tick of the window, in every seed (R4)', () => {
+    const result = everySeed(SEEDS, (_, i) => {
+      const missing = WINDOW.filter(
+        (tick) => !faulted[i]!.some((r): r is LogRecord => r.type === 'log' && r.component === TARGET && r.tick === tick && r.level === 'error'),
+      )
+      return missing.length === 0 || `no error log of ${TARGET} at ticks ${missing.join(', ')}`
+    })
+    assertPass(result, `${TARGET} error logs`)
   })
 
-  it('indirect: error % of the direct caller (gateway) >= baseline + 5 p.p.', () => {
-    const err = { base: windowMean(base, 'gateway', 'errorPct'), fault: windowMean(faulted, 'gateway', 'errorPct') }
-    expect(err.fault).toBeGreaterThanOrEqual(err.base + 5)
+  it('indirect: error % of the direct caller (gateway) >= +5 p.p. on the mean, >= +3.75 p.p. in every seed (R2, R3)', () => {
+    const [f, b] = series('gateway', 'errorPct')
+    assertPass(effect(f, b, { ppAtLeast: 5 }, SEEDS), 'gateway errorPct')
   })
 
-  it('F-4: a metric of a component other than the target deviates >= 25% from a non-zero baseline', () => {
-    // Callers stop their remaining calls once catalog fails, so cart serves noticeably less.
-    const rps = { base: windowMean(base, 'cart', 'rps'), fault: windowMean(faulted, 'cart', 'rps') }
-    expect(rps.base).toBeGreaterThan(0)
-    expect(Math.abs(rps.fault - rps.base) / rps.base).toBeGreaterThanOrEqual(0.25)
+  it('F-4: fixed pair (gateway, errorPct) is an eligible indirect signal in every seed (E1–E4)', () => {
+    const r = assertEligibleF4({ component: 'gateway', metric: 'errorPct' }, base, faulted, TARGET, { window: WINDOW, seeds: SEEDS })
+    expect(r.direction).toBe('rise')
+    expect(r.result.pass).toBe(true)
   })
 
   it('the caller sees `connection refused`; the target itself reports no request error', () => {
@@ -204,11 +223,11 @@ describe(`F-3 row 1 — signature in the window, ${SEEDS.length} seeds, defaults
 
 describe('other targets and parameters', () => {
   it('an ingress service (gateway) loses requests at the edge: its callees serve less (F-4)', () => {
-    const seeds = SEEDS.slice(0, 10)
-    const faulted = seeds.map((seed) => run(seed, [{ kind: KIND, target: 'gateway' }]))
-    const base = seeds.map((seed) => baseline(seed))
-    expect(windowMean(faulted, 'gateway', 'rps')).toBeLessThanOrEqual(0.5 * windowMean(base, 'gateway', 'rps'))
-    expect(windowMean(faulted, 'auth', 'rps')).toBeLessThanOrEqual(0.75 * windowMean(base, 'auth', 'rps'))
+    const faulted = SEEDS.map((seed) => run(seed, [{ kind: KIND, target: 'gateway' }]))
+    const base = SEEDS.map((seed) => baseline(seed))
+    const rps = (runs: readonly (readonly TelemetryRecord[])[], component: string) => runs.map((r) => windowMean(r, component, 'rps', WINDOW))
+    assertPass(effect(rps(faulted, 'gateway'), rps(base, 'gateway'), { ratioAtMost: 0.5 }, SEEDS), 'gateway rps')
+    assertPass(effect(rps(faulted, 'auth'), rps(base, 'auth'), { ratioAtMost: 0.75 }, SEEDS), 'auth rps')
   })
 
   it('a single-replica service in a minimal world is down restartTicks of every cycle', () => {
