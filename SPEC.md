@@ -29,7 +29,7 @@ Versão 1.0 · 2026-10-25 · Jefferson Valente (Diretor)
 
 **Resultado de aprendizagem da v0.1 (um só, mensurável):** ao terminar a campanha, o jogador consegue, diante de um alerta novo, (1) perguntar "o que mudou?" antes de abrir qualquer gráfico, (2) escolher qual sinal olhar primeiro e justificar, (3) descartar uma hipótese com evidência, (4) decidir mitigar antes de ter root cause quando o impacto justifica.
 
-**Como medir:** pré e pós-teste com o mesmo incidente inédito; métrica = número de sinais pedidos até a hipótese correta e se mitigou dentro do orçamento de impacto. Detalhes na seção 10.
+**Como medir:** pré e pós-teste com dois incidentes inéditos de dificuldade equivalente, ausentes da campanha, gerados a partir de FaultKinds existentes com seed e noise próprios; ordem contrabalanceada entre testadores quando houver mais de um; métrica = número de sinais pedidos até a hipótese correta e se mitigou dentro do orçamento de impacto. Detalhes na seção 10.
 
 ## 3. Princípios de design (não negociáveis)
 
@@ -260,7 +260,7 @@ Os três engenheiros trabalham em paralelo a partir da mesma ADR; QA só recebe 
 
 | Métrica | Como coletar | Alvo v0.1 |
 | --- | --- | --- |
-| Aprendizado: sinais pedidos até hipótese correta no incidente de teste | Pré e pós-teste com cenário inédito (não da campanha), log de ações exportado pelo jogador | Redução ≥ 30% entre pré e pós |
+| Aprendizado: sinais pedidos até hipótese correta no incidente de teste | Pré e pós-teste com dois incidentes inéditos de dificuldade equivalente, ausentes da campanha, gerados a partir de FaultKinds existentes com seed e noise próprios; ordem contrabalanceada entre testadores quando houver mais de um; log de ações exportado pelo jogador | Redução ≥ 30% entre pré e pós |
 | Aprendizado: mitigou dentro do orçamento de impacto | Mesmo teste | ≥ 70% dos testadores no pós |
 | Conclusão da campanha | localStorage exportado voluntariamente (sem telemetria automática na v0.1) | ≥ 5 jogadores externos |
 | Contribuição | GitHub | 1 PR de cenário externo mergeado |
