@@ -19,6 +19,12 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm -r --if-present run lint
       - run: pnpm -r --if-present run typecheck
+      # Engine tests run with coverage thresholds (QC-1, vitest.config.ts).
       - run: pnpm -r --if-present run test
       - run: pnpm -r --if-present run validate
       - run: pnpm -r --if-present run build
+      # $CLI = node packages/engine/dist/cli/main.js, built by the step above (ADR-007).
+      - name: Engine CLI checks (D-1, D-2, CLI-3, CLI-4, CLI-5, P-4)
+        run: bash packages/engine/scripts/ci-engine.sh
+      - name: Engine pack smoke (PUB-1, PUB-2)
+        run: bash packages/engine/scripts/pack-smoke.sh
