@@ -65,6 +65,40 @@ npx whodeployed-engine --help
 The remaining examples run in `/tmp/whodeployed-demo`, the directory where the tarball is
 installed.
 
+### The tarball in `packages/engine/dist/`
+
+CI packs the engine into `packages/engine/dist/` and keeps the tarball as the
+`whodeployed-engine-tarball` artifact of each workflow run (Actions tab of the repository; the
+download is a zip holding the `.tgz`). A release asset is packed the same way. To produce the
+same file locally, from the repository root:
+
+```sh
+rm -rf packages/engine/dist
+pnpm --filter ./packages/engine build
+pnpm --dir packages/engine pack --pack-destination dist/
+```
+
+The tarball is `packages/engine/dist/whodeployed-engine-<version>.tgz`. Start from
+`rm -rf packages/engine/dist`: the package ships all of `dist/`, and the build does not empty
+it, so a `.tgz` left there by an earlier pack would end up inside the new tarball. CI runs on
+a clean checkout. `bash packages/engine/scripts/pack-artifact.sh` runs the build and the pack
+above, refuses a `dist/` that already holds a `.tgz`, checks the tarball contents and installs
+it in a temporary directory outside the repository to compare its output with the built CLI.
+
+To install that tarball (or the one from a CI artifact) outside the repository:
+
+```sh
+mkdir -p /tmp/whodeployed-dist-demo
+cp packages/engine/dist/whodeployed-engine-*.tgz /tmp/whodeployed-dist-demo/
+cd /tmp/whodeployed-dist-demo
+npm install ./whodeployed-engine-*.tgz
+npx whodeployed-engine simulate --seed pub --fault connection_pool_exhaustion --ticks 30 | sha256sum
+```
+
+The hash is the same as the one printed by
+`node packages/engine/dist/cli/main.js simulate --seed pub --fault connection_pool_exhaustion --ticks 30 | sha256sum`
+in the repository: the installed CLI is the same code, and the same seed gives the same bytes.
+
 ## Command-line usage
 
 ```
