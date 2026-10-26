@@ -9,11 +9,12 @@
  * checked through the real `trace` question handler, i.e. on the trace a player would get for
  * `trace payment p95`, in every window tick in which the target serves >= 1 request.
  *
- * R6 (ADR-004 Emenda 3, proposed to the PM): a seed in which the target serves no request in the
- * window of the faulted run (`exercised` false) is exempt from the per-seed floors measured on
- * requests of the target or of its direct callers (p95 of the target, p95 of the gateway, F-4
- * pair); it still enters the means (R2, R5). Connections at poolSize (R4) need no request and hold
- * in every seed. The share of unexercised seeds is capped at 2% over 1000 consecutive seeds.
+ * R6 (PRD Emenda 3, PR #68; ADR-004 Emenda 3): a seed in which the target serves no request in
+ * the window of the faulted run (`exercised` false) is exempt from the per-seed floor of exactly
+ * three conditions of row 3: p95 of the target, p95 of the gateway and the F-4 pair (gateway, p95);
+ * it still enters the means (R2, R5). Connections at poolSize (R4) need no request and hold in
+ * every seed; the trace clause is per tick with a request. The share of unexercised seeds is
+ * capped at 2% over 1000 consecutive seeds, per case (pool alone, and the F-6 combination).
  */
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
@@ -45,6 +46,7 @@ import {
   effect,
   everySeed,
   exercised,
+  r6Exemption,
   signatureSeeds,
   signatureWindow,
   unexercisedShare,
@@ -227,8 +229,8 @@ function rowThree(label: string, inputs: readonly FaultInput[]): void {
     const base = SEEDS.map((seed) => baseline(seed))
     const series = (runs: readonly (readonly TelemetryRecord[])[], component: string, metric: MetricName) =>
       runs.map((records) => windowMean(records, component, metric, WINDOW))
-    // R6: one flag per seed, from the faulted run.
-    const exempt = faulted.map((records) => !exercised(records, TARGET, WINDOW))
+    // R6 (PRD Emenda 3): one exemption per exempted condition, flags from the faulted runs.
+    const r6 = (condition: 'targetP95' | 'gatewayP95' | 'f4Pair') => r6Exemption(KIND, condition, faulted, TARGET, WINDOW)
 
     it('R4: the connections metric of the target reaches poolSize in >= 1 tick of the window, in every seed', () => {
       const instances = defaultShop.services.find((s) => s.name === TARGET)!.replicas
@@ -248,7 +250,7 @@ function rowThree(label: string, inputs: readonly FaultInput[]): void {
     })
 
     it('R3: p95 of the target >= 3x the baseline (>= 2.5x in every exercised seed, R6)', () => {
-      assertPass(effect(series(faulted, TARGET, 'p95'), series(base, TARGET, 'p95'), { ratioAtLeast: 3 }, SEEDS, exempt), 'target p95')
+      assertPass(effect(series(faulted, TARGET, 'p95'), series(base, TARGET, 'p95'), { ratioAtLeast: 3 }, SEEDS, r6('targetP95')), 'target p95')
     })
 
     it('R4: in each window tick in which the target serves >= 1 request, a db.acquire span of its p95 trace is >= 50% of the root, in every seed', () => {
@@ -274,7 +276,8 @@ function rowThree(label: string, inputs: readonly FaultInput[]): void {
             checked += 1
           }
           // The rps of the aggregate and the server spans agree: an exercised seed has >= 1 tick to check.
-          if (exercised(faulted[i]!, TARGET, WINDOW) !== checked > 0) return `exercised ${!exempt[i]} but ${checked} ticks with requests`
+          const ex = exercised(faulted[i]!, TARGET, WINDOW)
+          if (ex !== checked > 0) return `exercised ${ex} but ${checked} ticks with requests`
           return true
         }),
         'db.acquire share of the p95 trace',
@@ -282,7 +285,7 @@ function rowThree(label: string, inputs: readonly FaultInput[]): void {
     })
 
     it('R3: gateway p95 rises >= 25% (>= 18.75% in every exercised seed, R6)', () => {
-      assertPass(effect(series(faulted, 'gateway', 'p95'), series(base, 'gateway', 'p95'), { riseAtLeast: 0.25 }, SEEDS, exempt), 'gateway p95')
+      assertPass(effect(series(faulted, 'gateway', 'p95'), series(base, 'gateway', 'p95'), { riseAtLeast: 0.25 }, SEEDS, r6('gatewayP95')), 'gateway p95')
     })
 
     it('R5: gateway p50 stays <= 1.5x the baseline (mean over seeds)', () => {
@@ -290,7 +293,7 @@ function rowThree(label: string, inputs: readonly FaultInput[]): void {
     })
 
     it('F-4: fixed eligible pair (gateway, p95), in every exercised seed (E1–E4, R6)', () => {
-      const r = assertEligibleF4({ component: 'gateway', metric: 'p95' }, base, faulted, TARGET, { window: WINDOW, seeds: SEEDS, exempt })
+      const r = assertEligibleF4({ component: 'gateway', metric: 'p95' }, base, faulted, TARGET, { window: WINDOW, seeds: SEEDS, exempt: r6('f4Pair') })
       expect(r.direction).toBe('rise')
     })
 
@@ -309,7 +312,7 @@ rowThree('F-6: + service_crash_loop on catalog', WITH_CRASH_LOOP)
 const R6_SEEDS = Array.from({ length: R6_MIN_SEEDS }, (_, i) => `pool-r6-${i}`)
 const R6_TIMEOUT_MS = 300_000
 
-describe('R6 — share of seeds in which the target serves no request in the window <= 2% (1000 consecutive seeds)', () => {
+describe('R6 — share of seeds in which the target serves no request in the window <= 2%, per case (1000 consecutive seeds, PRD Emenda 3)', () => {
   it.each([
     ['connection_pool_exhaustion alone', [{ kind: KIND }]],
     ['F-6: + service_crash_loop on catalog', WITH_CRASH_LOOP],

@@ -7,14 +7,19 @@ import type { MetricName, MetricRecord, SpanRecord, TelemetryRecord } from '../.
 import {
   ELIGIBILITY_FLOORS,
   QA_SEEDS_ENV,
+  R6_CONDITIONS,
+  R6_F4_PAIR,
+  R6_KINDS,
   R6_MAX_UNEXERCISED_SHARE,
   R6_MIN_SEEDS,
+  type R6Condition,
   assertEligibleF4,
   assertPass,
   ceiling,
   effect,
   everySeed,
   exercised,
+  r6Exemption,
   servedRequests,
   signatureSeeds,
   signatureWindow,
@@ -384,14 +389,32 @@ describe('R6 — exercised target, exempt seeds and the 2% ceiling (ADR-004 Emen
     expect(() => exercised([], 'payment', [])).toThrow(/empty window/)
   })
 
+  /** R6 exemption of `condition` with seed i unexercised when `unexercised[i]` (synthetic runs). */
+  const r6 = (condition: R6Condition, unexercised: readonly boolean[]) =>
+    r6Exemption('connection_pool_exhaustion', condition, unexercised.map((u) => (u ? [] : [span('payment', 16, 'server')])), 'payment', window)
+  const firstOnly = (n = 10) => Array.from({ length: n }, (_, i) => i === 0)
+
+  it('r6Exemption: flags come from exercised() on the faulted runs; scope is closed to connection_pool_exhaustion', () => {
+    expect(R6_KINDS).toEqual(['connection_pool_exhaustion'])
+    expect(R6_CONDITIONS).toEqual(['targetP95', 'gatewayP95', 'f4Pair'])
+    expect(R6_F4_PAIR).toEqual({ component: 'gateway', metric: 'p95' })
+    const e = r6('targetP95', [true, false, true])
+    expect(e.flags).toEqual([true, false, true])
+    expect(e).toMatchObject({ kind: 'connection_pool_exhaustion', condition: 'targetP95' })
+    // PRD Emenda 3: not for row 1 nor any other kind.
+    for (const kind of ['service_crash_loop', 'disk_full', 'bad_deploy', 'slow_dependency', 'cache_cold_start'] as const) {
+      expect(() => r6Exemption(kind, 'targetP95', [[]], 'catalog', window)).toThrow(/R6 does not apply to/)
+    }
+    expect(() => r6Exemption('connection_pool_exhaustion', 'gatewayP50' as R6Condition, [[]], 'payment', window)).toThrow(/condition gatewayP50/)
+  })
+
   it('effect: an exempt seed that would fail per seed passes; without exempt the same seed fails', () => {
     const base = ones(10, 10)
     const f = [10, ...ones(9, 40)]
-    const exempt = [true, ...ones(9, 0).map(() => false)]
     const without = effect(f, base, { ratioAtLeast: 3 }, SEEDS10)
     expect(without.pass).toBe(false)
     expect(without.failingSeeds).toEqual([{ seed: 's-0', value: 1 }])
-    const withR6 = effect(f, base, { ratioAtLeast: 3 }, SEEDS10, exempt)
+    const withR6 = effect(f, base, { ratioAtLeast: 3 }, SEEDS10, r6('targetP95', firstOnly()))
     expect(withR6.pass).toBe(true)
     expect(withR6.failingSeeds).toEqual([])
     expect(withR6.exemptSeeds).toEqual(['s-0'])
@@ -400,20 +423,34 @@ describe('R6 — exercised target, exempt seeds and the 2% ceiling (ADR-004 Emen
     // The exempt seed still enters the mean (R2): same mean with and without exempt.
     expect(withR6.mean).toBe(without.mean)
     expect(withR6.perSeed[0]).toEqual({ seed: 's-0', value: 1 })
+    // gatewayP95 stands for rise >= 25%.
+    const g = effect([100, ...ones(9, 140)], ones(10, 100), { riseAtLeast: 0.25 }, SEEDS10, r6('gatewayP95', firstOnly()))
+    expect(g.pass).toBe(true)
+  })
+
+  it('effect: the exemption must name the condition it is used on (closed scope)', () => {
+    const base = ones(10, 10)
+    const f = ones(10, 40)
+    // targetP95 is ratio >= 3x; gatewayP95 is rise >= 25%; f4Pair only through assertEligibleF4.
+    expect(() => effect(f, base, { riseAtLeast: 0.25 }, SEEDS10, r6('targetP95', firstOnly()))).toThrow(/targetP95 stands for/)
+    expect(() => effect(f, base, { ratioAtLeast: 2 }, SEEDS10, r6('targetP95', firstOnly()))).toThrow(/targetP95 stands for/)
+    expect(() => effect(f, base, { ppAtLeast: 20 }, SEEDS10, r6('gatewayP95', firstOnly()))).toThrow(/gatewayP95 stands for/)
+    expect(() => effect(f, base, { ratioAtLeast: 3 }, SEEDS10, r6('f4Pair', firstOnly()))).toThrow(/only accepted by assertEligibleF4/)
+    // A hand-made object with another kind is refused too.
+    const forged = { kind: 'service_crash_loop', condition: 'targetP95', flags: firstOnly() } as unknown as ReturnType<typeof r6>
+    expect(() => effect(f, base, { ratioAtLeast: 3 }, SEEDS10, forged)).toThrow(/outside the scope of PRD Emenda 3/)
   })
 
   it('effect: the exempt seed still counts on the mean, so a mean below the threshold fails', () => {
-    const base = ones(10, 10)
     // Nine seeds at 2.6x pass the per-seed floor but the mean is < 3x.
-    const r = effect([0, ...ones(9, 26)], base, { ratioAtLeast: 3 }, SEEDS10, [true, ...Array.from({ length: 9 }, () => false)])
+    const r = effect([0, ...ones(9, 26)], ones(10, 10), { ratioAtLeast: 3 }, SEEDS10, r6('targetP95', firstOnly()))
     expect(r.failingSeeds).toEqual([])
     expect(r.pass).toBe(false)
     expect(r.message).toContain('FAILS')
   })
 
   it('effect: a non-exempt seed still fails next to an exempt one', () => {
-    const exempt = [true, false, ...Array.from({ length: 8 }, () => false)]
-    const r = effect([0, 20, ...ones(8, 40)], ones(10, 10), { ratioAtLeast: 3 }, SEEDS10, exempt)
+    const r = effect([0, 20, ...ones(8, 40)], ones(10, 10), { ratioAtLeast: 3 }, SEEDS10, r6('targetP95', firstOnly()))
     expect(r.failingSeeds).toEqual([{ seed: 's-1', value: 2 }])
     expect(r.pass).toBe(false)
   })
@@ -421,31 +458,35 @@ describe('R6 — exercised target, exempt seeds and the 2% ceiling (ADR-004 Emen
   it('effect: a zero baseline in an exempt seed is reported as NaN instead of throwing; not exempt, it throws', () => {
     const base = [0, ...ones(9, 10)]
     const f = [0, ...ones(9, 40)]
-    const exempt = [true, ...Array.from({ length: 9 }, () => false)]
-    const r = effect(f, base, { ratioAtLeast: 3 }, SEEDS10, exempt)
+    const r = effect(f, base, { ratioAtLeast: 3 }, SEEDS10, r6('targetP95', firstOnly()))
     expect(r.perSeed[0]!.value).toBeNaN()
     expect(r.pass).toBe(true)
-    expect(effect(f, base, { riseAtLeast: 0.25 }, SEEDS10, exempt).pass).toBe(true)
+    expect(effect(f, base, { riseAtLeast: 0.25 }, SEEDS10, r6('gatewayP95', firstOnly())).pass).toBe(true)
     expect(() => effect(f, base, { ratioAtLeast: 3 }, SEEDS10)).toThrow(/seed s-0/)
-    // p.p. never needs the baseline: the value stays a number.
-    expect(effect([0, ...ones(9, 9)], ones(10, 0), { ppAtLeast: 5 }, SEEDS10, exempt).perSeed[0]!.value).toBe(0)
   })
 
-  it('effect: exempt of a different length than the series throws', () => {
-    expect(() => effect(ones(10, 30), ones(10, 10), { ratioAtLeast: 3 }, SEEDS10, [true])).toThrow(/exempt \(R6\): expected 10 flags, got 1/)
-    expect(() => effect(ones(10, 30), ones(10, 10), { ratioAtLeast: 3 }, SEEDS10, Array.from({ length: 11 }, () => false))).toThrow(/expected 10/)
+  it('effect: an exemption with a different number of seeds than the series throws', () => {
+    expect(() => effect(ones(10, 30), ones(10, 10), { ratioAtLeast: 3 }, SEEDS10, r6('targetP95', [true]))).toThrow(/exempt \(R6\): expected 10 flags, got 1/)
+    expect(() => effect(ones(10, 30), ones(10, 10), { ratioAtLeast: 3 }, SEEDS10, r6('targetP95', firstOnly(11)))).toThrow(/expected 10/)
   })
 
-  it('assertEligibleF4: exempt seeds skip the E3/E4 per-seed floor; without exempt the same seed fails; wrong length throws', () => {
+  it('assertEligibleF4: exempt seeds skip the E3/E4 per-seed floor only for the row 3 pair (gateway, p95) built as f4Pair', () => {
     const opts = { window, seeds: SEEDS10 }
-    const base = runs('x', 'p95', ones(10, 100), window)
-    const f = runs('x', 'p95', [100, ...ones(9, 140)], window)
-    expect(() => assertEligibleF4({ component: 'x', metric: 'p95' }, base, f, 't', opts)).toThrow(/s-0=0/)
-    const exempt = [true, ...Array.from({ length: 9 }, () => false)]
-    const r = assertEligibleF4({ component: 'x', metric: 'p95' }, base, f, 't', { ...opts, exempt })
+    const base = runs('gateway', 'p95', ones(10, 100), window)
+    const f = runs('gateway', 'p95', [100, ...ones(9, 140)], window)
+    const pair = { component: 'gateway', metric: 'p95' } as const
+    expect(() => assertEligibleF4(pair, base, f, 'payment', opts)).toThrow(/s-0=0/)
+    const r = assertEligibleF4(pair, base, f, 'payment', { ...opts, exempt: r6('f4Pair', firstOnly()) })
     expect(r.result.pass).toBe(true)
     expect(r.result.exemptSeeds).toEqual(['s-0'])
-    expect(() => assertEligibleF4({ component: 'x', metric: 'p95' }, base, f, 't', { ...opts, exempt: [true] })).toThrow(/exempt \(R6\)/)
+    expect(() => assertEligibleF4(pair, base, f, 'payment', { ...opts, exempt: r6('f4Pair', [true]) })).toThrow(/exempt \(R6\)/)
+    expect(() => assertEligibleF4(pair, base, f, 'payment', { ...opts, exempt: r6('gatewayP95', firstOnly()) })).toThrow(/must be built for f4Pair/)
+    // Any other pair takes no exemption.
+    const other = runs('orders-worker', 'errorPct', ones(10, 0), window)
+    const otherF = runs('orders-worker', 'errorPct', [0, ...ones(9, 20)], window)
+    expect(() =>
+      assertEligibleF4({ component: 'orders-worker', metric: 'errorPct' }, other, otherF, 'payment', { ...opts, exempt: r6('f4Pair', firstOnly()) }),
+    ).toThrow(/only applies to the F-4 pair of row 3/)
   })
 
   it('ceiling (R5) has no exemption and reports none', () => {

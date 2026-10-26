@@ -14,15 +14,18 @@
  * - R3: in every seed the effect goes in the same direction and has >= 75% of the required size.
  * - R4: existence conditions hold in every seed (`everySeed`).
  * - R5: ceilings and comparisons hold only on the mean (`ceiling`).
- * - R6 (proposed to the PM in ADR-004 Emenda 3; T1.37): a seed in which the fault target serves no
- *   request in the window of the faulted run (`exercised` is false) is exempt from the per-seed
- *   floors (R3, and E3/E4 of F-4) measured on requests of the target or of its direct callers.
- *   The caller passes `exempt` (one flag per seed) to `effect` / `assertEligibleF4`; exempt seeds
- *   still enter the means (R2, R5). Existence conditions that need no request (R4, `everySeed`)
- *   have no exemption. The share of unexercised seeds over >= 1000 consecutive seeds is capped at
- *   2% (`unexercisedShare`).
+ * - R6 (PRD Emenda 3, PR #68; ADR-004 Emenda 3; T1.37): a seed in which the fault target serves
+ *   no request in the window of the faulted run (`exercised` is false) is exempt from the per-seed
+ *   floor, and only there. Closed scope: F-3 row 3 (`connection_pool_exhaustion`, alone or in any
+ *   F-6 combination) and only three conditions, `R6_CONDITIONS`: p95 of the target (ratio >= 3x),
+ *   p95 of the gateway (rise >= 25%) and the fixed F-4 pair of row 3 (gateway, p95). The only way
+ *   to exempt a seed is an `R6Exemption` built by `r6Exemption`, which refuses any other kind;
+ *   `effect` and `assertEligibleF4` check that the exemption names the condition they measure.
+ *   Exempt seeds still enter the means (R2, R5). Existence conditions (R4, `everySeed`) and
+ *   ceilings (R5, `ceiling`) take no exemption. The share of unexercised seeds over >= 1000
+ *   consecutive seeds is capped at 2%, per case (`unexercisedShare`).
  */
-import type { MetricName, MetricRecord, TelemetryRecord } from '../../src/types.js'
+import type { FaultKind, MetricName, MetricRecord, TelemetryRecord } from '../../src/types.js'
 
 /** R3: per-seed share of the required effect size. */
 export const PER_SEED_SHARE = 0.75
@@ -125,6 +128,50 @@ export function exercised(records: readonly TelemetryRecord[], target: string, w
   return servedRequests(records, target, window) > 0
 }
 
+/** R6 (PRD Emenda 3): the only fault kinds the exemption applies to (F-3 row 3). */
+export const R6_KINDS: readonly FaultKind[] = ['connection_pool_exhaustion']
+
+/** R6 (PRD Emenda 3): the only conditions of row 3 that can be exempted. */
+export type R6Condition = 'targetP95' | 'gatewayP95' | 'f4Pair'
+export const R6_CONDITIONS: readonly R6Condition[] = ['targetP95', 'gatewayP95', 'f4Pair']
+
+/** The condition each R6Condition stands for, checked where the exemption is used. */
+const R6_EFFECT_CONDS: { readonly [C in Exclude<R6Condition, 'f4Pair'>]: string } = {
+  targetP95: JSON.stringify({ ratioAtLeast: 3 }),
+  gatewayP95: JSON.stringify({ riseAtLeast: 0.25 }),
+}
+/** The fixed F-4 pair of row 3 (ADR-004 Emenda 2; PRD Emenda 3). */
+export const R6_F4_PAIR: Readonly<F4Pair> = { component: 'gateway', metric: 'p95' }
+
+declare const r6Brand: unique symbol
+/**
+ * An R6 exemption: one flag per seed (true = target not exercised in the faulted run), for one
+ * kind of `R6_KINDS` and one condition of `R6_CONDITIONS`. Only `r6Exemption` builds one.
+ */
+export interface R6Exemption {
+  readonly [r6Brand]: true
+  readonly kind: FaultKind
+  readonly condition: R6Condition
+  readonly flags: readonly boolean[]
+}
+
+/**
+ * Builds the R6 exemption of `condition` for a fault of `kind` on `target`, from the faulted run
+ * of each seed (`faulted[i]` belongs to seed i). Throws for a kind outside `R6_KINDS` or a
+ * condition outside `R6_CONDITIONS`: extending R6 needs a new PRD amendment.
+ */
+export function r6Exemption(
+  kind: FaultKind,
+  condition: R6Condition,
+  faulted: readonly (readonly TelemetryRecord[])[],
+  target: string,
+  window: readonly number[],
+): R6Exemption {
+  if (!R6_KINDS.includes(kind)) throw new Error(`R6 does not apply to ${kind}: only ${R6_KINDS.join(', ')} (PRD Emenda 3)`)
+  if (!R6_CONDITIONS.includes(condition)) throw new Error(`R6 does not apply to condition ${String(condition)}: only ${R6_CONDITIONS.join(', ')} (PRD Emenda 3)`)
+  return { kind, condition, flags: faulted.map((records) => !exercised(records, target, window)) } as unknown as R6Exemption
+}
+
 export interface UnexercisedShareResult {
   /** Number of seeds measured. */
   seeds: number
@@ -219,9 +266,13 @@ function ratio(f: number, b: number, what: string): number {
 
 const fmt = (x: number): string => (Number.isInteger(x) ? String(x) : x.toFixed(4))
 
-function exemptFlags(n: number, exempt: readonly boolean[] | undefined): readonly boolean[] {
-  if (exempt !== undefined && exempt.length !== n) throw new Error(`exempt (R6): expected ${n} flags, got ${exempt.length}`)
-  return exempt ?? Array.from({ length: n }, () => false)
+function exemptFlags(n: number, exempt: R6Exemption | undefined): readonly boolean[] {
+  if (exempt === undefined) return Array.from({ length: n }, () => false)
+  if (!R6_KINDS.includes(exempt.kind) || !R6_CONDITIONS.includes(exempt.condition)) {
+    throw new Error(`exempt (R6): ${exempt.kind}/${exempt.condition} is outside the scope of PRD Emenda 3`)
+  }
+  if (exempt.flags.length !== n) throw new Error(`exempt (R6): expected ${n} flags, got ${exempt.flags.length}`)
+  return exempt.flags
 }
 
 function verdict(name: string, r: Omit<EffectResult, 'message' | 'pass'>, atMost: boolean, perSeed: boolean): EffectResult {
@@ -247,20 +298,38 @@ function verdict(name: string, r: Omit<EffectResult, 'message' | 'pass'>, atMost
  * every seed). `faulted[i]` and `base[i]` belong to the same seed (`seeds[i]`, used in messages).
  * A ratio condition with a baseline of 0 (mean or any non-exempt seed) throws.
  *
- * `exempt` (R6, one flag per seed): an exempt seed is left out of the per-seed floor but still
- * enters the mean. Its per-seed value is reported for information (NaN when a ratio has a zero
- * baseline in that seed, which is what an unexercised target gives). Only for conditions measured
- * on requests of the fault target or of its direct callers.
+ * `exempt` (R6, PRD Emenda 3): built by `r6Exemption` for `targetP95` (cond must be ratio >= 3x)
+ * or `gatewayP95` (cond must be rise >= 25%); any other use throws. An exempt seed is left out of
+ * the per-seed floor but still enters the mean. Its per-seed value is reported for information
+ * (NaN when a ratio has a zero baseline in that seed, which is what an unexercised target gives).
  */
 export function effect(
   faulted: readonly number[],
   base: readonly number[],
   cond: EffectCond,
   seeds?: readonly string[],
-  exempt?: readonly boolean[],
+  exempt?: R6Exemption,
+): EffectResult {
+  return effectWith(faulted, base, cond, seeds, exempt, false)
+}
+
+function effectWith(
+  faulted: readonly number[],
+  base: readonly number[],
+  cond: EffectCond,
+  seeds: readonly string[] | undefined,
+  exempt: R6Exemption | undefined,
+  fromF4: boolean,
 ): EffectResult {
   checkSeries(faulted, base)
   const names = labels(faulted.length, seeds)
+  if (exempt !== undefined) {
+    if (exempt.condition === 'f4Pair') {
+      if (!fromF4) throw new Error('exempt (R6): f4Pair is only accepted by assertEligibleF4')
+    } else if (fromF4 || R6_EFFECT_CONDS[exempt.condition] !== JSON.stringify(cond)) {
+      throw new Error(`exempt (R6): ${exempt.condition} stands for ${R6_EFFECT_CONDS[exempt.condition]}, not ${JSON.stringify(cond)}${fromF4 ? ' in F-4' : ''}`)
+    }
+  }
   const isExempt = exemptFlags(faulted.length, exempt)
   const mf = mean(faulted)
   const mb = mean(base)
@@ -378,10 +447,11 @@ export interface F4Options {
   /** Seed labels, in the order of the runs. */
   seeds: readonly string[]
   /**
-   * R6: one flag per seed; an exempt seed (target not exercised in the faulted run) is left out
-   * of the per-seed floor of E3/E4 but still enters the means (E2 and the mean of E3).
+   * R6 (PRD Emenda 3): built by `r6Exemption` with condition `f4Pair`, only for the fixed pair
+   * of row 3 (`R6_F4_PAIR`). An exempt seed is left out of the per-seed floor of E3/E4 but still
+   * enters the means (E2 and the mean of E3).
    */
-  exempt?: readonly boolean[]
+  exempt?: R6Exemption
 }
 
 export interface F4Result {
@@ -419,6 +489,13 @@ export function assertEligibleF4(
   if (base.length !== faulted.length || base.length !== options.seeds.length) {
     throw new Error(`${tag}: runs and seeds differ in length (baseline ${base.length}, faulted ${faulted.length}, seeds ${options.seeds.length})`)
   }
+  const ex = options.exempt
+  if (ex !== undefined) {
+    if (ex.condition !== 'f4Pair') throw new Error(`${tag}: exempt (R6) must be built for f4Pair, got ${ex.condition}`)
+    if (component !== R6_F4_PAIR.component || metric !== R6_F4_PAIR.metric) {
+      throw new Error(`${tag}: exempt (R6) only applies to the F-4 pair of row 3 (${R6_F4_PAIR.component}, ${R6_F4_PAIR.metric})`)
+    }
+  }
   const b = base.map((records) => windowMean(records, component, metric, options.window))
   const f = faulted.map((records) => windowMean(records, component, metric, options.window))
   const baselineMean = mean(b)
@@ -430,13 +507,13 @@ export function assertEligibleF4(
   let result: EffectResult
   if (metric === 'errorPct') {
     direction = 'rise'
-    result = effect(f, b, { ppAtLeast: F4_ERROR_PP }, options.seeds, options.exempt)
+    result = effectWith(f, b, { ppAtLeast: F4_ERROR_PP }, options.seeds, ex, true)
   } else if (mean(f) >= baselineMean) {
     direction = 'rise'
-    result = effect(f, b, { riseAtLeast: F4_DEVIATION }, options.seeds, options.exempt)
+    result = effectWith(f, b, { riseAtLeast: F4_DEVIATION }, options.seeds, ex, true)
   } else {
     direction = 'drop'
-    result = effect(f, b, { ratioAtMost: 1 - F4_DEVIATION }, options.seeds, options.exempt)
+    result = effectWith(f, b, { ratioAtMost: 1 - F4_DEVIATION }, options.seeds, ex, true)
   }
   if (!result.pass) throw new Error(`${tag}: E3/E4, ${result.message}`)
   return { pair, baselineMean, direction, result }
