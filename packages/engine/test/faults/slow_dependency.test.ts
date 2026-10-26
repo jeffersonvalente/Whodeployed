@@ -1,12 +1,15 @@
 /**
- * T1.21 — fault `slow_dependency` (ADR-004; PRD F-1, F-2, F-3 row 5, F-4; SPEC §3.3, §3.4).
+ * T1.21 / T1.35 — fault `slow_dependency` (ADR-004 and its Emenda 2; PRD F-1, F-2, F-3 row 5,
+ * F-4; SPEC §3.3, §3.4; DET).
  *
  * The module only adds latency to the target. The retry storm and the errors in the callers must
  * emerge from the call policy of the traffic generator (timeouts + retries, ADR-002 §5); these
  * tests measure them, they are not produced by the fault.
  *
- * Signature assertions compare window means (ticks startTick+6..startTick+11) over >= 10 seeds
- * against the baseline, never trace-by-trace equality during the fault (ADR-003 §8).
+ * Signature assertions follow the seed aggregation rule R1–R5 and the F-4 eligibility rules E1–E4
+ * (PRD Emenda 2) through test/support/signature.ts: window means (ticks startTick+6..startTick+11)
+ * over the seeds of `signatureSeeds` (replaceable with ENGINE_QA_SEEDS), never trace-by-trace
+ * equality against the baseline while the fault is active (ADR-003 §8).
  */
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
@@ -21,67 +24,74 @@ import { toNdjson } from '../../src/sim/serialize.js'
 import { simulate } from '../../src/sim/simulation.js'
 import { buildWorld } from '../../src/world/build.js'
 import { defaultShop } from '../../src/world/default-shop.js'
-import type { Fault, FaultInput, MetricName, MetricRecord, Rng, RngFactory, TelemetryRecord } from '../../src/types.js'
+import { assertEligibleF4, assertPass, effect, signatureSeeds, signatureWindow, windowMean } from '../support/signature.js'
+import type { Fault, FaultInput, MetricName, Rng, RngFactory, TelemetryRecord } from '../../src/types.js'
 
 const pkgDir = fileURLToPath(new URL('../..', import.meta.url))
 const verifier = join(pkgDir, 'scripts', 'verify-coherence.mjs')
 
 const TICKS = 30
-const SEEDS = Array.from({ length: 12 }, (_, i) => `slow-dep-${i}`)
+/** R1: fixed list `slow-dep-0..11`, replaced by ENGINE_QA_SEEDS when set. */
+const SEEDS = signatureSeeds('slow-dep')
 const world = buildWorld(defaultShop, 'resolve')
 const resolve = (input: Omit<FaultInput, 'kind'> = {}): Fault[] => resolveFaults([{ kind: 'slow_dependency', ...input }], world)
 
 const [DEFAULT] = resolve()
 const START = DEFAULT!.startTick
 const TARGET = DEFAULT!.target
-const WINDOW_TICKS = 6
-const inWindow = (tick: number) => tick >= START + 6 && tick <= START + 11
+const WINDOW = signatureWindow(START)
+const inWindow = (tick: number) => WINDOW.includes(tick)
+/** Fixed F-4 pair (tasks T1.35, recommended): the edge caller, two hops away from the slow dependency. */
+const F4_PAIR = { component: 'gateway', metric: 'p95' } as const
 
 const run = (seed: string, faults: readonly Fault[] = []) => simulate({ system: defaultShop, seed, faults }, TICKS)
 const sha = (text: string) => createHash('sha256').update(text).digest('hex')
 const mean = (xs: readonly number[]) => xs.reduce((a, b) => a + b, 0) / xs.length
 const components = [...world.services, ...world.deps].map((c) => c.name)
 
-/** Window mean of one aggregate metric of a component. */
-function windowMean(records: readonly TelemetryRecord[], component: string, metric: MetricName): number {
-  const values = records
-    .filter((r): r is MetricRecord => r.type === 'metric' && r.component === component && r.instance === undefined && inWindow(r.tick))
-    .map((r) => r[metric])
-  expect(values).toHaveLength(WINDOW_TICKS)
-  return mean(values)
-}
-
-/** Client spans of callers towards the target in the window, per tick. */
+/** Client spans of callers towards the target in the window, per tick (one run). */
 const clientSpansToTarget = (records: readonly TelemetryRecord[], target: string) =>
-  records.filter((r) => r.type === 'span' && r.kind === 'client' && r.peer === target && inWindow(r.tick)).length / WINDOW_TICKS
+  records.filter((r) => r.type === 'span' && r.kind === 'client' && r.peer === target && inWindow(r.tick)).length / WINDOW.length
 
 const runs = SEEDS.map((seed) => ({ seed, base: run(seed), fault: run(seed, [DEFAULT!]) }))
+
+/** Per-seed window means of one aggregate metric, in seed order (R2/R3 input). */
+const series = (component: string, metric: MetricName) => ({
+  fault: runs.map((r) => windowMean(r.fault, component, metric, WINDOW)),
+  base: runs.map((r) => windowMean(r.base, component, metric, WINDOW)),
+})
 
 describe('slow_dependency — defaults (ADR-004)', () => {
   it('adds 1500 ms to postgres from tick 10', () => {
     expect(DEFAULT).toEqual({ kind: 'slow_dependency', target: 'postgres', startTick: 10, params: { addedLatencyMs: 1500 } })
     expect(faultCatalog.slow_dependency.defaultTarget).toBe('postgres')
   })
+
+  it('R1: the seed list has >= 10 distinct seeds', () => {
+    expect(new Set(SEEDS).size).toBe(SEEDS.length)
+    expect(SEEDS.length).toBeGreaterThanOrEqual(10)
+  })
 })
 
-describe('F-3 row 5 — retry storm after a slow dependency', () => {
-  it('p95 of the target >= 3x baseline (every seed and mean)', () => {
-    const ratios = runs.map(({ base, fault }) => windowMean(fault, TARGET, 'p95') / windowMean(base, TARGET, 'p95'))
-    for (const r of ratios) expect(r).toBeGreaterThanOrEqual(3)
-    expect(mean(ratios)).toBeGreaterThanOrEqual(3)
+describe('F-3 row 5 — retry storm after a slow dependency (R1–R5)', () => {
+  it('R2/R3: p95 of the target >= 3x baseline on the mean and >= 2.5x in every seed', () => {
+    const { fault, base } = series(TARGET, 'p95')
+    assertPass(effect(fault, base, { ratioAtLeast: 3 }, SEEDS), `p95 of ${TARGET}`)
   })
 
-  it('client spans of callers towards the target >= 2x baseline (retries)', () => {
-    const base = mean(runs.map((r) => clientSpansToTarget(r.base, TARGET)))
-    const fault = mean(runs.map((r) => clientSpansToTarget(r.fault, TARGET)))
-    expect(fault / base).toBeGreaterThanOrEqual(2)
-    for (const r of runs) expect(clientSpansToTarget(r.fault, TARGET), r.seed).toBeGreaterThan(clientSpansToTarget(r.base, TARGET))
+  it('R2/R3: client spans of callers towards the target >= 2x baseline on the mean and >= 1.75x in every seed (retries)', () => {
+    const fault = runs.map((r) => clientSpansToTarget(r.fault, TARGET))
+    const base = runs.map((r) => clientSpansToTarget(r.base, TARGET))
+    assertPass(effect(fault, base, { ratioAtLeast: 2 }, SEEDS), `client spans towards ${TARGET}`)
   })
 
-  it('the component with the largest absolute error % increase is not the target ("the culprit is not who screams")', () => {
-    const increase = (c: string) => mean(runs.map(({ base, fault }) => windowMean(fault, c, 'errorPct') - windowMean(base, c, 'errorPct')))
+  it('R5: the component with the largest absolute error % increase (on the mean over seeds) is not the target ("the culprit is not who screams")', () => {
+    const increase = (c: string) => {
+      const { fault, base } = series(c, 'errorPct')
+      return mean(fault) - mean(base)
+    }
     const ranked = components.map((c) => ({ c, d: increase(c) })).sort((a, b) => b.d - a.d)
-    expect(ranked[0]!.c).not.toBe(TARGET)
+    expect(ranked[0]!.c, JSON.stringify(ranked)).not.toBe(TARGET)
     expect(ranked[0]!.d).toBeGreaterThan(0)
     expect(increase(TARGET)).toBe(0)
   })
@@ -101,11 +111,17 @@ describe('F-3 row 5 — retry storm after a slow dependency', () => {
   })
 })
 
-describe('F-4 — the fault shows outside the target', () => {
-  it.each(['gateway', 'payment', 'orders-worker'])('p95 of %s deviates >= 25% vs baseline (window mean over the seeds)', (component) => {
-    const base = mean(runs.map((r) => windowMean(r.base, component, 'p95')))
-    const fault = mean(runs.map((r) => windowMean(r.fault, component, 'p95')))
-    expect(Math.abs(fault - base) / base).toBeGreaterThanOrEqual(0.25)
+describe('F-4 — the fault shows outside the target (E1–E4, fixed pair)', () => {
+  it(`(${F4_PAIR.component}, ${F4_PAIR.metric}) is an eligible indirect signal in every seed`, () => {
+    const result = assertEligibleF4(
+      F4_PAIR,
+      runs.map((r) => r.base),
+      runs.map((r) => r.fault),
+      TARGET,
+      { window: WINDOW, seeds: SEEDS },
+    )
+    expect(result.direction).toBe('rise')
+    expect(result.result.pass).toBe(true)
   })
 })
 
@@ -124,7 +140,7 @@ describe('parameters and targets', () => {
     const base = mean(SEEDS.slice(0, 4).map((s) => clientSpansToTarget(run(s), TARGET)))
     const fault = mean(SEEDS.slice(0, 4).map((s) => clientSpansToTarget(run(s, faults), TARGET)))
     expect(fault / base).toBeLessThan(1.1)
-    const p95 = mean(SEEDS.slice(0, 4).map((s) => windowMean(run(s, faults), TARGET, 'p95')))
+    const p95 = mean(SEEDS.slice(0, 4).map((s) => windowMean(run(s, faults), TARGET, 'p95', WINDOW)))
     expect(p95).toBeGreaterThan(50)
   })
 
