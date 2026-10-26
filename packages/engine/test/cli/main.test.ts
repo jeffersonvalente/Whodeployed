@@ -98,12 +98,27 @@ describe('simulate (CLI-1, CLI-2)', () => {
     for (const type of ['metric', 'log', 'span']) expect(counts.get(type) ?? 0).toBeGreaterThan(0)
   }, LONG)
 
-  it('stdout is exactly the library NDJSON for the same input (CLI = library)', () => {
-    const run = cli(['simulate', '--seed', 'lib', '--ticks', '20', '--fault', 'connection_pool_exhaustion:target=cart,startTick=5'])
-    const world = buildWorld(defaultShop, 'lib')
-    const faults = resolveFaults([{ kind: 'connection_pool_exhaustion', target: 'cart', startTick: 5 }], world)
-    expect(run.stdout).toBe(toNdjson(simulate({ system: defaultShop, seed: 'lib', faults }, 20)))
-  }, LONG)
+  // main.ts writes the NDJSON in chunks of RECORDS_PER_CHUNK = 4096 records (#41). The run must
+  // cross several chunk boundaries, or a chunk that drops or repeats its edge record goes unseen.
+  const RECORDS_PER_CHUNK = 4096
+  const parityCases: [string, number, string[]][] = [
+    ['baseline', 90, []],
+    ['with a fault', 90, ['--fault', 'connection_pool_exhaustion:target=cart,startTick=5']],
+  ]
+  for (const [name, ticks, faultArgs] of parityCases) {
+    it(`stdout is exactly the library NDJSON for the same input, across chunk boundaries (CLI = library, ${name})`, () => {
+      const run = cli(['simulate', '--seed', 'lib', '--ticks', String(ticks), ...faultArgs])
+      const world = buildWorld(defaultShop, 'lib')
+      const inputs = faultArgs.length === 0 ? [] : [{ kind: 'connection_pool_exhaustion', target: 'cart', startTick: 5 }]
+      const records = simulate({ system: defaultShop, seed: 'lib', faults: resolveFaults(inputs, world) }, ticks)
+      // At least 3 boundaries, and the last chunk is partial.
+      expect(records.length).toBeGreaterThan(3 * RECORDS_PER_CHUNK)
+      expect(records.length % RECORDS_PER_CHUNK).not.toBe(0)
+      expect(run.status).toBe(0)
+      expect(run.stdout.split('\n')).toHaveLength(records.length + 1)
+      expect(run.stdout).toBe(toNdjson(records))
+    }, LONG)
+  }
 
   for (const kind of faultKinds) {
     it(`--fault ${kind} with catalog defaults: exit 0, coherent (CLI-2, P-4)`, () => {

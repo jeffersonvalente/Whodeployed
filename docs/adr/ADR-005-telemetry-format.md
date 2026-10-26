@@ -51,7 +51,7 @@ Níveis: `debug`, `info`, `warn`, `error`. Todo span com `status: 'error'` (clie
 - `packages/engine/fixtures/` contém exatamente 7 arquivos NDJSON: `baseline.ndjson` e `<kind>.ndjson` para os 6 kinds, cada um gerado por `whodeployed-engine simulate --seed fixture --ticks 60 [--fault <kind>]` (padrões da ADR-004). O comando de cada arquivo fica em `packages/engine/scripts/gen-fixtures.mjs` e no README do pacote; o teste `test/fixtures.test.ts` regenera e compara byte a byte.
 - Respostas de `ask()` para a UI ficam no subdiretório `fixtures/answers/` (um JSON por kind de `Question`, baseline seed `fixture`, tick 30). Assim `ls fixtures/*.ndjson` conta os 7 do D-3.
 - Fixtures não entram no tarball (PUB-2).
-- Orçamento de tamanho: cada NDJSON de 60 ticks ≤ 2 MB; a topologia da ADR-002 foi dimensionada para isso.
+- Orçamento de tamanho: cada NDJSON de 60 ticks ≤ 2 MB; a topologia da ADR-002 foi dimensionada para isso. *(Substituído pela Emenda 2: ≤ 3 MiB por arquivo.)*
 
 ## Consequências
 
@@ -93,3 +93,33 @@ Chaves de `attrs` (logs, `FailEffect`, `ErrorDetail`, `FaultLog`) casam com `^[A
 - **Códigos de saída:** 0 = coerente; 1 = primeiro desvio de coerência ou de formato (stderr); **2** = erro de uso ou de leitura (argumentos a mais, arquivo inexistente). Substitui o "0 ou 1" do texto original.
 - **`null` em campo opcional** (ex.: `"instance": null`) é desvio de formato: o verificador sai 1. Hoje ele aceita e trata como agregado; a correção é da T1.26 (que já usa o script no CI e passa a editá-lo).
 - **Fica aceito, por desenho:** registro `metric` zerado em tick ou componente sem spans, e instância sem registro de métrica. O verificador não conhece o `SystemDefinition`, então não sabe quais componentes e instâncias existem; completude das métricas é S-1, verificada pela T1.24 contra o mundo.
+
+## Emenda 2 — 2026-10-25 (bloqueio da T1.27: orçamento de tamanho dos fixtures)
+
+### Contexto
+
+A T1.27 mediu os 7 NDJSON com os comandos desta ADR (seed `fixture`, 60 ticks, padrões da ADR-004): baseline 1.976.962 bytes; `service_crash_loop` 1.939.950; `bad_deploy` 1.637.441; `slow_dependency` 2.435.840; `cache_cold_start` 2.150.137; `disk_full` 2.132.298 (`failRatio` atual); `connection_pool_exhaustion` ≈ 1.995.000. Três passam do orçamento de 2 MB do texto original. O Arquiteto mediu também os defaults que a Emenda 2 da ADR-004 ainda pode escolher: `disk_full` com `failRatio` 0,6 = 2.259.634 e 0,9 = 2.535.432 (pior caso da grade da T1.36); `connection_pool_exhaustion` com `leakPerTick` 4 = 1.994.912. `gzip -9` de `slow_dependency` = 138.551.
+
+Nada disso pode encolher pelos meios normais: D-3 exige ≥ 60 ticks; o formato (esta ADR), a topologia e o ingress (ADR-002 §6) e os defaults (ADR-004) estão fixos; P-4 e D-3 exigem todos os spans, sem amostragem. Os 2 MB eram uma estimativa de dimensionamento desta ADR, não critério do PRD: D-3 não fala em tamanho.
+
+### Decisão
+
+1. **Orçamento por arquivo: ≤ 3 MiB (3.145.728 bytes)** para cada `fixtures/*.ndjson` de 60 ticks. Substitui o "≤ 2 MB" da seção "Fixtures". Pior caso medido: 2.535.432 bytes (`disk_full` a 0,9), 19% abaixo do teto. A soma dos 7 fica entre 14,4 e 14,7 MB, conforme o default que a T1.36 escolher.
+2. **O formato continua NDJSON puro, sem compressão no repositório.** Nomes e contagem de D-3 (`ls fixtures/*.ndjson | wc -l` = 7) não mudam.
+3. **O teto é verificado em teste:** `test/fixtures.test.ts` (T1.27), além de regenerar e comparar byte a byte, afirma `size ≤ 3_145_728` para cada arquivo. Se uma mudança futura de algoritmo ou de default passar do teto, o PR que a causa para e pede emenda desta ADR. Não se troca o formato, não se reduz `ticks` e não se amostram spans para caber.
+4. **Atributos git:** a T1.27 cria `packages/engine/.gitattributes` com a linha `fixtures/** text eol=lf linguist-generated=true`. `eol=lf` impede que um checkout com `core.autocrlf` (Windows) quebre a comparação byte a byte de D-3. `linguist-generated` recolhe por padrão o diff desses arquivos no GitHub, sem escondê-lo: `git diff` continua mostrando as linhas, e é assim que o PR explica a regeneração.
+5. **Fora do pacote npm, como antes (PUB-2):** o campo `files` do `package.json` não inclui `fixtures/`, e a checagem do tarball da T1.26 continua valendo. O tamanho dos fixtures não afeta quem instala o pacote.
+
+### Por que não as alternativas
+
+- **Versionar `.ndjson.gz`:** mudaria o critério D-3 do PRD (`*.ndjson`), que é do PM. Além disso, a saída do gzip depende da versão e do nível do zlib. O teste de regeneração teria de comparar o conteúdo descomprimido, e o arquivo versionado deixaria de ser byte-idêntico ao que o CLI gera, o que tira de D-1 sua demonstração mais direta. A UI e qualquer leitor externo teriam de descomprimir. O ganho de armazenamento é pequeno, porque o git já guarda blobs comprimidos com zlib: no clone, cada fixture custa perto do tamanho gzip (~140 KB), não os 2,4 MB brutos.
+- **Git LFS:** depende de serviço externo ao repositório, quebra clones e forks sem LFS e complica a contribuição (SPEC §3.7, §3.8). Desproporcional para ~15 MB.
+- **Menos ticks, menos tráfego ou amostragem de spans:** proibidos por D-3, ADR-002 §6 e P-4.
+- **Manter 2 MB e encolher o formato (chaves curtas, colunas):** mudaria o contrato desta ADR e de `types.ts`, que motor, verificador e UI já consomem, só para caber num número que não é critério de ninguém.
+
+### Consequências
+
+- **PRD:** nenhum critério muda. D-3 e PUB-2 ficam como estão; o orçamento é só desta ADR.
+- **Repositório público:** cada regeneração de fixtures adiciona ao histórico aproximadamente o tamanho comprimido dos arquivos alterados (dezenas a centenas de KB por PR). Aceitável; esta ADR já exige que o PR explique o diff.
+- **UI (fases 2–3):** os fixtures servem a desenvolvimento e testes. O build de produção do site não empacota os 7 NDJSON no bundle JavaScript. Se uma tela precisar de um deles no ar, carrega por `fetch` de arquivo estático (o GitHub Pages comprime no transporte) ou usa a biblioteca do motor no browser. A decisão concreta é do Arquiteto da fase em que a UI existir.
+- **T1.27:** o critério de tamanho passa a ser 3 MiB e a tarefa ganha o `.gitattributes`. As dependências não mudam: os NDJSON de `disk_full` e `connection_pool_exhaustion` continuam esperando T1.36 e T1.37.

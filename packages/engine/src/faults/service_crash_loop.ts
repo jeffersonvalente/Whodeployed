@@ -9,9 +9,11 @@
  *   - a random base offset in [0, period) is drawn;
  *   - the instance of rank r gets phase (base + floor(r × period / n)) mod period,
  *
- * so phases are spread evenly over the cycle. With the defaults (1 up, 2 down, 3 replicas) exactly
- * one instance is up in every tick and the other two are down, as ADR-004 requires; which one is
- * up, and when, changes with the seed (no decorable pattern, SPEC §11).
+ * so phases are spread evenly over the cycle. With the defaults (`uptimeTicks` 1, `restartTicks` 3:
+ * period 4) and 3 replicas, the three phases are three consecutive positions of the 4-tick cycle:
+ * in 3 of every 4 ticks exactly one instance is up and the other two are down, and in 1 of every 4
+ * none is up. At least one instance is down in every tick, as ADR-004 requires (ADR-004 Emenda 2
+ * §4); which one is up, and when, changes with the seed (no decorable pattern, SPEC §11).
  *
  * Position of an instance at `s = tick − startTick` is `(s + phase) mod period`; it is up while the
  * position is `< uptimeTicks`. A crash is the tick an instance goes down: `s = 0` when it starts
