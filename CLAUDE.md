@@ -14,6 +14,19 @@ Este repositório é **spec-driven**. Antes de qualquer tarefa:
 - Só o Diretor altera `SPEC.md`, via PR com ADR.
 - Nenhum agente abre a fase N+1 sem `docs/gates/GATE-N.md` aprovado.
 
+## Quando chamar o Diretor
+
+Chamar o Diretor somente para:
+
+- (a) decisão de gate;
+- (b) qualquer alteração do `SPEC.md`;
+- (c) item listado em SPEC §12 como decisão do autor;
+- (d) ação irreversível ou pública: release, tag, post, divulgação, exclusão.
+
+Tudo o mais é decisão delegada: o agente decide, registra o motivo em uma linha na descrição do PR (ou em ADR, quando for arquitetural) e segue. Pontuação, nomenclatura, estrutura de arquivo, texto de ADR própria e escolha entre duas formas equivalentes: nunca escalar.
+
+Consolidar perguntas: o Diretor é chamado uma vez por gate, com todas as decisões pendentes listadas, não a cada PR.
+
 ## Onde cada coisa mora
 
 | Artefato | Caminho | Dono |
