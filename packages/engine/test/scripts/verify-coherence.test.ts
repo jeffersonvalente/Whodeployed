@@ -7,6 +7,9 @@
  *
  * The samples in test/scripts/samples/ are small, hand-checked NDJSON files; every bad sample
  * is coherent.ndjson with one deliberate defect.
+ *
+ * T1.26 (ADR-005 Emenda 1): `null` in an optional field is a format deviation (exit 1), never
+ * read as "absent"; usage and read errors keep exit 2.
  */
 import { spawnSync } from 'node:child_process'
 import { readFileSync, readdirSync } from 'node:fs'
@@ -109,6 +112,7 @@ describe('verify-coherence — rejects incoherent samples (exit 1, first deviati
     ['child-ends-after-parent', /line 4: S-3 span "t0r0s2" ends at 14 ms, after its parent "t0r0s1" \(12 ms\)/],
     ['two-roots', /line 2: S-3 trace "t0r0" has 2 roots \(lines 2, 3\)/],
     ['unknown-parent', /line 4: S-3 span "t0r0s2" has parentId "t0r0s9" not found in trace "t0r0"/],
+    ['null-instance', /line 14: metric field instance is null; an optional field is omitted, never null \(ADR-005\)/],
   ]
 
   it('has a test case for every bad sample file', () => {
@@ -156,6 +160,42 @@ describe('verify-coherence — rejects incoherent samples (exit 1, first deviati
     expectDeviation(runStdin([span('a', 'b'), span('b', 'a')]), /line 1: S-3 trace "tx" has 0 roots$/m)
     expectDeviation(runStdin([span('r'), span('a', 'b'), span('b', 'a')]), /line 2: S-3 span "a" is in a parent cycle/)
     expectDeviation(runStdin([span('r'), span('r', 'r')]), /line 2: S-3 trace "tx" repeats spanId "r"/)
+  })
+
+  it('rejects null in every optional field of every record type (ADR-005 Emenda 1)', () => {
+    const optional: [number, string][] = [
+      [1, 'instance'], // event (line 1 of coherent.ndjson)
+      [1, 'restart'],
+      [1, 'note'],
+      [3, 'parentId'], // span
+      [3, 'peer'],
+      [9, 'traceId'], // log
+      [9, 'attrs'],
+      [14, 'instance'], // metric (aggregate)
+    ]
+    for (const [lineNo, field] of optional) {
+      const lines = [...coherentLines]
+      const record = JSON.parse(lines[lineNo - 1] as string) as Record<string, unknown>
+      lines[lineNo - 1] = JSON.stringify({ ...record, [field]: null })
+      const type = record.type as string
+      expectDeviation(runStdin(lines), new RegExp(`^verify-coherence: line ${lineNo}: ${type} field ${field} is null; `))
+    }
+  })
+
+  it('null is reported before any other check, and an absent optional field stays valid', () => {
+    // A null parentId is the null deviation, not "not a string"; the aggregate metric without
+    // `instance` (coherent.ndjson line 14) is still accepted.
+    const lines = [...coherentLines]
+    lines[2] = (lines[2] as string).replace('"parentId":"t0r0s0"', '"parentId":null')
+    expectDeviation(runStdin(lines), /^verify-coherence: line 3: span field parentId is null; /)
+    expect(coherentLines[13]).not.toContain('"instance"')
+    expect(runStdin(coherentLines).status).toBe(0)
+  })
+
+  it('usage and read errors keep exit 2 even when the input would have a null', () => {
+    const result = run([sample('null-instance'), sample('coherent')])
+    expect(result.status).toBe(2)
+    expect(result.stdout).toBe('')
   })
 
   it('rejects malformed lines with the line number', () => {
