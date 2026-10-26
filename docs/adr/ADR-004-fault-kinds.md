@@ -33,9 +33,9 @@ Linha 6 (alerta ruidoso) é `noise`; linha 8 é composição de duas falhas (F-6
 | `service_crash_loop` | `catalog` | serviço | `uptimeTicks` | 1 | 1–30 | sim | ticks |
 | | | | `restartTicks` | 3 | 1–30 | sim | ticks |
 | `disk_full` | `postgres` | dependência `database` | `fillTicks` | 3 | 0–30 | sim | ticks |
-| | | | `failRatio` | 0.4 | 0.05–1 | não | ratio |
+| | | | `failRatio` | 0.9 | 0.05–1 | não | ratio |
 | `connection_pool_exhaustion` | `payment` | serviço que chama uma `database` | `poolSize` | 20 | 1–500 | sim | connections |
-| | | | `leakPerTick` | 2 | 0–100 | sim | connections/tick |
+| | | | `leakPerTick` | 4 | 0–100 | sim | connections/tick |
 | | | | `acquireTimeoutMs` | 2000 | 100–30000 | sim | ms |
 | `bad_deploy` | `gateway` | serviço com ≥ 2 instâncias | `affectedInstances` | 1 | 1–(réplicas−1) | sim | instances |
 | | | | `errorRatio` | 0.9 | 0.05–1 | não | ratio |
