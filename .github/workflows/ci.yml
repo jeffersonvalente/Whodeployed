@@ -32,10 +32,18 @@ jobs:
       # pack-smoke.sh, on a dist/ with no .tgz; checks PUB-2 and the isolated install.
       - name: Engine tarball artifact (PUB-2, PUB-4 via CI artifact)
         run: bash packages/engine/scripts/pack-artifact.sh
+      # Artifact name = whodeployed-engine-<version>, <version> read from packages/engine/package.json
+      # at CI time (ADR-007 Emenda 3); fails unless the packed tarball carries that same version.
+      - name: Engine package version
+        id: engine-version
+        run: |
+          version="$(node -p "require('./packages/engine/package.json').version")"
+          test -f "packages/engine/dist/whodeployed-engine-${version}.tgz"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
       # Not a GitHub Release: the tarball is a workflow artifact only (ADR-009).
       - name: Upload engine tarball
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: whodeployed-engine-tarball
+          name: whodeployed-engine-${{ steps.engine-version.outputs.version }}
           path: packages/engine/dist/*.tgz
           if-no-files-found: error
