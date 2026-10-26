@@ -6,15 +6,17 @@
  *   instance of the cache (S-4, visible to `whatChanged`) and marks those instances `down` for
  *   this tick only, so callers get `connection refused` and fall through to `onMiss`;
  * - `0 <= s < warmupTicks`: every call to the cache is forced to miss with probability
- *   `1 − s / warmupTicks`, drawn per request from ('miss', tick, traceId) (one stream per trace,
- *   consumed in call order, which the traffic generator makes deterministic);
+ *   `min(1, 2 · (1 − s / warmupTicks))` (ADR-004 Emenda 3): fully cold up to `s = warmupTicks / 2`
+ *   (the hot set is not reloaded yet), then warming linearly to 0 at `s = warmupTicks`. Drawn per
+ *   request from ('miss', tick, traceId) (one stream per trace, consumed in call order, which the
+ *   traffic generator makes deterministic);
  * - `s >= warmupTicks`: no effect; only the cache's own `cacheHitRatio` applies.
  *
  * The cache keeps answering (its RPS does not drop after the restart tick): a forced miss is still a
  * call to the cache, followed by the `onMiss` call. What moves is emergent (SPEC §3.3): the backing
- * store's RPS and latency, and the p50 of every service that uses the cache, all derived from the
- * spans the miss path generates. The cache itself looks healthy again right after the restart
- * (SPEC §3.4: the pain shows elsewhere).
+ * store's RPS, connections and latency, and the p50 of the services that use the cache, all
+ * derived from the spans the miss path generates. The cache itself looks healthy again right after
+ * the restart (SPEC §3.4: the pain shows elsewhere).
  *
  * Hooks are only invoked for tick >= startTick (orchestrator gating, F-2).
  */
@@ -55,7 +57,7 @@ export const cacheColdStart: FaultModule<'cache_cold_start'> = {
       onCall: (ctx) => {
         const s = ctx.tick - fault.startTick
         if (ctx.target !== cache.name || s >= warmupTicks) return undefined
-        const coldRatio = 1 - s / warmupTicks
+        const coldRatio = Math.min(1, 2 * (1 - s / warmupTicks))
         return streamOf(ctx.tick, ctx.traceId).chance(coldRatio) ? { forceCacheMiss: true } : undefined
       },
     }

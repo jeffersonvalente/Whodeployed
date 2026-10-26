@@ -1,5 +1,5 @@
 /**
- * T1.22 / T1.35 — fault `cache_cold_start` (ADR-004 and its Emenda 2; PRD F-1, F-2, F-3 row 7
+ * T1.22 / T1.35 — fault `cache_cold_start` (ADR-004 and its Emendas 2 and 3; PRD F-1, F-2, F-3 row 7
  * with Emenda 1, F-4, S-4; SPEC §3.3, §3.4; DET).
  *
  * The module only restarts the cache (event + down on startTick) and forces misses while it warms
@@ -27,7 +27,7 @@ import { toNdjson } from '../../src/sim/serialize.js'
 import { createSimulation, simulate } from '../../src/sim/simulation.js'
 import { buildWorld } from '../../src/world/build.js'
 import { defaultShop } from '../../src/world/default-shop.js'
-import { assertEligibleF4, assertPass, ceiling, effect, everySeed, signatureSeeds, signatureWindow, windowMean } from '../support/signature.js'
+import { assertEligibleF4, assertPass, ceiling, effect, everySeed, PER_SEED_SHARE, signatureSeeds, signatureWindow, windowMean } from '../support/signature.js'
 import type { EventRecord, Fault, FaultInput, MetricName, TelemetryRecord } from '../../src/types.js'
 
 const pkgDir = fileURLToPath(new URL('../..', import.meta.url))
@@ -47,13 +47,20 @@ const WINDOW = signatureWindow(START)
 /** Services that call the cache directly (default-shop: auth, catalog, cart). */
 const CACHE_USERS = world.services.filter((s) => s.calls.some((c) => c.target === TARGET)).map((s) => s.name)
 const BACKING = 'postgres'
-/** The fixed cache user of the p50 condition of F-3 row 7 (the same in every seed, E4). */
-const P50_USER = 'auth'
 /**
- * Fixed F-4 pair (tasks T1.35, recommended). The RPS of postgres is not eligible for F-4: its
- * baseline mean (~0.55 req/s) is below the E2 floor of 1 req/s; it stays an F-3 condition.
+ * The cache user whose p50 carries R2 of F-3 row 7 ("p50 of >= 1 service that uses redis rises
+ * >= 25%": auth is that service on the mean). R3 is read per seed over all of CACHE_USERS (ADR-004
+ * Emenda 3; tasks, "Notas da Emenda 3", T1.35 item 3).
  */
-const F4_PAIR = { component: P50_USER, metric: 'p50' } as const
+const P50_USER = 'auth'
+/** F-3 row 7: required p50 rise of the cache users (R2), and its per-seed floor (R3). */
+const P50_RISE = 0.25
+/**
+ * Fixed F-4 pair (ADR-004 Emenda 3): the load moves to the backing store. The RPS of postgres is not
+ * eligible for F-4: its baseline mean (~0.55 req/s) is below the E2 floor of 1 req/s; it stays an
+ * F-3 condition.
+ */
+const F4_PAIR = { component: BACKING, metric: 'connections' } as const
 
 const run = (seed: string, faults: readonly Fault[] = []) => simulate({ system: defaultShop, seed, faults }, TICKS)
 const sha = (text: string) => createHash('sha256').update(text).digest('hex')
@@ -113,25 +120,37 @@ describe('F-3 row 7 — cold cache after a restart (R1–R5)', () => {
     assertPass(ceiling(after.fault, after.base, { ratioAtMost: 1.2 }, SEEDS), `${BACKING} RPS from startTick + warmup on`)
   })
 
-  it('the backing-store RPS decays as the cache warms up (cold early, warm late)', () => {
+  it('the backing-store RPS stays on a cold plateau up to warmup / 2, then decays as the cache warms up (ADR-004 Emenda 3)', () => {
+    const half = WARMUP / 2
     const early = ratio(BACKING, 'rps', START + 1, START + 3)
     const mid = ratio(BACKING, 'rps', START + 6, START + 11)
+    const warming = ratio(BACKING, 'rps', START + half + 1, START + half + 6)
     const late = ratio(BACKING, 'rps', START + WARMUP - 6, START + WARMUP - 1)
-    expect(early).toBeGreaterThan(mid)
-    expect(mid).toBeGreaterThan(late)
+    // Plateau: fully cold in both stretches, so the same load within 10%.
+    expect(Math.abs(early / mid - 1)).toBeLessThanOrEqual(0.1)
+    expect(mid).toBeGreaterThan(warming)
+    expect(warming).toBeGreaterThan(late)
   })
 
   // PRD F-3 row 7, Emenda 1 (issue #39): p50 of >= 1 service that uses the cache rises >= 25% in
   // the signature window. Every request of a cache user pays the miss (one onMiss call), so the
-  // median moves; p95 is dominated by the own-latency tail and is only pinned as "goes up".
-  it(`R2/R3: p50 of ${P50_USER} (a cache user, fixed) rises >= 25% on the mean and >= 18.75% in every seed, in the signature window`, () => {
+  // median moves. Which cache user shows it most can change from seed to seed (a diffuse effect,
+  // PRD Emenda 1), so R3 takes the best cache user of each seed (ADR-004 Emenda 3).
+  it(`R2: p50 of ${P50_USER} (a cache user) rises >= 25% on the mean over seeds, in the signature window`, () => {
     const fault = runs.map((r) => windowMean(r.fault, P50_USER, 'p50', WINDOW))
     const base = runs.map((r) => windowMean(r.base, P50_USER, 'p50', WINDOW))
-    assertPass(effect(fault, base, { riseAtLeast: 0.25 }, SEEDS), `p50 of ${P50_USER}`)
+    const result = effect(fault, base, { riseAtLeast: P50_RISE }, SEEDS)
+    expect(result.mean, `p50 of ${P50_USER}: ${result.message}`).toBeGreaterThanOrEqual(P50_RISE)
   })
 
-  it('p95 of every cache user also goes up in the window (on the mean)', () => {
-    for (const c of CACHE_USERS) expect(ratio(c, 'p95', START + 6, START + 11)).toBeGreaterThan(1)
+  it(`R3: in every seed, the p50 of >= 1 cache user (${CACHE_USERS.join(', ')}) rises >= 18.75%, in the signature window`, () => {
+    const floor = PER_SEED_SHARE * P50_RISE
+    const result = everySeed(SEEDS, (_, i) => {
+      const rises = CACHE_USERS.map((c) => ({ c, rise: windowMean(runs[i]!.fault, c, 'p50', WINDOW) / windowMean(runs[i]!.base, c, 'p50', WINDOW) - 1 }))
+      const best = rises.reduce((a, b) => (b.rise > a.rise ? b : a))
+      return best.rise >= floor || `best cache user ${best.c} p50 ${(best.rise * 100).toFixed(2)}% (need >= ${floor * 100}%)`
+    })
+    assertPass(result, 'p50 of the best cache user')
   })
 })
 
@@ -222,8 +241,8 @@ describe('module', () => {
     expect(hooks.onCall!({ ...ctx, tick: 9, target: 'redis' })).toBeUndefined()
   })
 
-  it('the forced-miss ratio decreases linearly with s (1 − s / warmupTicks)', () => {
-    const fault: Fault = { kind: 'cache_cold_start', target: 'redis', startTick: 0, params: { warmupTicks: 4 } }
+  it('the forced-miss ratio is a plateau, then linear: min(1, 2 · (1 − s / warmupTicks)) (ADR-004 Emenda 3)', () => {
+    const fault: Fault = { kind: 'cache_cold_start', target: 'redis', startTick: 0, params: { warmupTicks: 8 } }
     const hooks = cacheColdStart.activate(fault, world, createRngFactory('ratio'))
     const missRate = (tick: number) => {
       let misses = 0
@@ -234,11 +253,12 @@ describe('module', () => {
       }
       return misses / n
     }
-    expect(missRate(0)).toBe(1)
-    expect(missRate(1)).toBeCloseTo(0.75, 1)
-    expect(missRate(2)).toBeCloseTo(0.5, 1)
-    expect(missRate(3)).toBeCloseTo(0.25, 1)
-    expect(missRate(4)).toBe(0)
+    // Fully cold up to s = warmupTicks / 2 (chance(1) always hits).
+    for (const s of [0, 1, 2, 3, 4]) expect(missRate(s)).toBe(1)
+    expect(missRate(5)).toBeCloseTo(0.75, 1)
+    expect(missRate(6)).toBeCloseTo(0.5, 1)
+    expect(missRate(7)).toBeCloseTo(0.25, 1)
+    expect(missRate(8)).toBe(0)
   })
 })
 
