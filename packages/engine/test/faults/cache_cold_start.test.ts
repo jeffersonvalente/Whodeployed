@@ -1,13 +1,17 @@
 /**
- * T1.22 — fault `cache_cold_start` (ADR-004; PRD F-1, F-2, F-3 row 7, F-4, S-4; SPEC §3.3, §3.4).
+ * T1.22 / T1.35 — fault `cache_cold_start` (ADR-004 and its Emenda 2; PRD F-1, F-2, F-3 row 7
+ * with Emenda 1, F-4, S-4; SPEC §3.3, §3.4; DET).
  *
  * The module only restarts the cache (event + down on startTick) and forces misses while it warms
  * up. The extra load on the backing store, its connections and the latency of the cache users
  * emerge from the miss path of the traffic generator (onMiss calls, ADR-002 §5).
  *
- * Assertions compare means over >= 10 seeds against the baseline, never trace-by-trace equality
- * during the fault (ADR-003 §8). Row 7 fixes its own ticks for the backing-store RPS (3 ticks after
- * startTick; startTick + warmup); everything else uses the signature window startTick+6..+11.
+ * Signature assertions follow the seed aggregation rule R1–R5 and the F-4 eligibility rules E1–E4
+ * (PRD Emenda 2) through test/support/signature.ts, over the seeds of `signatureSeeds`
+ * (replaceable with ENGINE_QA_SEEDS), never trace-by-trace equality against the baseline while the
+ * fault is active (ADR-003 §8). Row 7 fixes its own ticks for the backing-store RPS (each of the 3
+ * ticks after startTick; startTick + warmup); everything else uses the signature window
+ * startTick+6..+11.
  */
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
@@ -23,12 +27,14 @@ import { toNdjson } from '../../src/sim/serialize.js'
 import { createSimulation, simulate } from '../../src/sim/simulation.js'
 import { buildWorld } from '../../src/world/build.js'
 import { defaultShop } from '../../src/world/default-shop.js'
-import type { EventRecord, Fault, FaultInput, MetricName, MetricRecord, TelemetryRecord } from '../../src/types.js'
+import { assertEligibleF4, assertPass, ceiling, effect, everySeed, signatureSeeds, signatureWindow, windowMean } from '../support/signature.js'
+import type { EventRecord, Fault, FaultInput, MetricName, TelemetryRecord } from '../../src/types.js'
 
 const pkgDir = fileURLToPath(new URL('../..', import.meta.url))
 const verifier = join(pkgDir, 'scripts', 'verify-coherence.mjs')
 
-const SEEDS = Array.from({ length: 12 }, (_, i) => `cold-start-${i}`)
+/** R1: fixed list `cold-start-0..11`, replaced by ENGINE_QA_SEEDS when set. */
+const SEEDS = signatureSeeds('cold-start')
 const world = buildWorld(defaultShop, 'resolve')
 const resolve = (input: Omit<FaultInput, 'kind'> = {}): Fault[] => resolveFaults([{ kind: 'cache_cold_start', ...input }], world)
 
@@ -37,53 +43,74 @@ const START = DEFAULT!.startTick
 const TARGET = DEFAULT!.target
 const WARMUP = DEFAULT!.params['warmupTicks']!
 const TICKS = START + WARMUP + 3
+const WINDOW = signatureWindow(START)
 /** Services that call the cache directly (default-shop: auth, catalog, cart). */
 const CACHE_USERS = world.services.filter((s) => s.calls.some((c) => c.target === TARGET)).map((s) => s.name)
 const BACKING = 'postgres'
+/** The fixed cache user of the p50 condition of F-3 row 7 (the same in every seed, E4). */
+const P50_USER = 'auth'
+/**
+ * Fixed F-4 pair (tasks T1.35, recommended). The RPS of postgres is not eligible for F-4: its
+ * baseline mean (~0.55 req/s) is below the E2 floor of 1 req/s; it stays an F-3 condition.
+ */
+const F4_PAIR = { component: P50_USER, metric: 'p50' } as const
 
 const run = (seed: string, faults: readonly Fault[] = []) => simulate({ system: defaultShop, seed, faults }, TICKS)
 const sha = (text: string) => createHash('sha256').update(text).digest('hex')
 const mean = (xs: readonly number[]) => xs.reduce((a, b) => a + b, 0) / xs.length
+/** Ticks [from, to], inclusive. */
+const ticks = (from: number, to: number) => Array.from({ length: to - from + 1 }, (_, i) => from + i)
 
-/** Mean of one aggregate metric of a component over ticks [from, to]. */
-function meanOver(records: readonly TelemetryRecord[], component: string, metric: MetricName, from: number, to: number): number {
-  const values = records
-    .filter((r): r is MetricRecord => r.type === 'metric' && r.component === component && r.instance === undefined && r.tick >= from && r.tick <= to)
-    .map((r) => r[metric])
-  expect(values).toHaveLength(to - from + 1)
-  return mean(values)
-}
-const windowMean = (records: readonly TelemetryRecord[], component: string, metric: MetricName) =>
-  meanOver(records, component, metric, START + 6, START + 11)
+/** Mean of one aggregate metric of a component over ticks [from, to] (one run). */
+const meanOver = (records: readonly TelemetryRecord[], component: string, metric: MetricName, from: number, to: number) =>
+  windowMean(records, component, metric, ticks(from, to))
 
 const runs = SEEDS.map((seed) => ({ seed, base: run(seed), fault: run(seed, [DEFAULT!]) }))
-/** Seed-mean ratio fault/baseline of one metric over [from, to]. */
-const ratio = (component: string, metric: MetricName, from: number, to: number) =>
-  mean(runs.map((r) => meanOver(r.fault, component, metric, from, to))) / mean(runs.map((r) => meanOver(r.base, component, metric, from, to)))
+/** Per-seed means of one aggregate metric over [from, to], in seed order (R2/R3 input). */
+const series = (component: string, metric: MetricName, from: number, to: number) => ({
+  fault: runs.map((r) => meanOver(r.fault, component, metric, from, to)),
+  base: runs.map((r) => meanOver(r.base, component, metric, from, to)),
+})
+/** Seed-mean ratio fault/baseline of one metric over [from, to] (R2 reading). */
+const ratio = (component: string, metric: MetricName, from: number, to: number) => {
+  const { fault, base } = series(component, metric, from, to)
+  return mean(fault) / mean(base)
+}
 
 describe('cache_cold_start — defaults (ADR-004)', () => {
   it('restarts redis at tick 10 and warms up over 30 ticks', () => {
     expect(DEFAULT).toEqual({ kind: 'cache_cold_start', target: 'redis', startTick: 10, params: { warmupTicks: 30 } })
     expect(faultCatalog.cache_cold_start.defaultTarget).toBe('redis')
     expect(CACHE_USERS).toEqual(['auth', 'catalog', 'cart'])
+    expect(CACHE_USERS).toContain(P50_USER)
+  })
+
+  it('R1: the seed list has >= 10 distinct seeds', () => {
+    expect(new Set(SEEDS).size).toBe(SEEDS.length)
+    expect(SEEDS.length).toBeGreaterThanOrEqual(10)
   })
 })
 
-describe('F-3 row 7 — cold cache after a restart', () => {
-  it('emits one config event with restart: true for the cache instance at startTick, and no other event (S-4)', () => {
-    for (const { fault } of runs) {
-      const events = fault.filter((r): r is EventRecord => r.type === 'event')
-      expect(events).toEqual([{ type: 'event', tick: START, kind: 'config', target: TARGET, instance: `${TARGET}-0`, restart: true }])
-    }
+describe('F-3 row 7 — cold cache after a restart (R1–R5)', () => {
+  it('R4: in every seed, one config event with restart: true for the cache instance at startTick, and no other event (S-4)', () => {
+    const expected: EventRecord[] = [{ type: 'event', tick: START, kind: 'config', target: TARGET, instance: `${TARGET}-0`, restart: true }]
+    const result = everySeed(SEEDS, (_, i) => {
+      const events = runs[i]!.fault.filter((r): r is EventRecord => r.type === 'event')
+      return JSON.stringify(events) === JSON.stringify(expected) || `events ${JSON.stringify(events)}`
+    })
+    assertPass(result, 'restart event at startTick')
   })
 
-  it.each([1, 2, 3])(`${BACKING} RPS >= 2x baseline at startTick + %i`, (offset) => {
-    expect(ratio(BACKING, 'rps', START + offset, START + offset)).toBeGreaterThanOrEqual(2)
+  it.each([1, 2, 3])(`R2/R3: ${BACKING} RPS >= 2x baseline at startTick + %i on the mean and >= 1.75x in every seed`, (offset) => {
+    const { fault, base } = series(BACKING, 'rps', START + offset, START + offset)
+    assertPass(effect(fault, base, { ratioAtLeast: 2 }, SEEDS), `${BACKING} RPS at startTick + ${offset}`)
   })
 
-  it(`${BACKING} RPS is back to <= 1.2x baseline at startTick + warmup (and stays there)`, () => {
-    expect(ratio(BACKING, 'rps', START + WARMUP, START + WARMUP)).toBeLessThanOrEqual(1.2)
-    expect(ratio(BACKING, 'rps', START + WARMUP, TICKS - 1)).toBeLessThanOrEqual(1.2)
+  it(`R5: ${BACKING} RPS is back to <= 1.2x baseline at startTick + warmup (and stays there), on the mean`, () => {
+    const at = series(BACKING, 'rps', START + WARMUP, START + WARMUP)
+    assertPass(ceiling(at.fault, at.base, { ratioAtMost: 1.2 }, SEEDS), `${BACKING} RPS at startTick + warmup`)
+    const after = series(BACKING, 'rps', START + WARMUP, TICKS - 1)
+    assertPass(ceiling(after.fault, after.base, { ratioAtMost: 1.2 }, SEEDS), `${BACKING} RPS from startTick + warmup on`)
   })
 
   it('the backing-store RPS decays as the cache warms up (cold early, warm late)', () => {
@@ -97,24 +124,34 @@ describe('F-3 row 7 — cold cache after a restart', () => {
   // PRD F-3 row 7, Emenda 1 (issue #39): p50 of >= 1 service that uses the cache rises >= 25% in
   // the signature window. Every request of a cache user pays the miss (one onMiss call), so the
   // median moves; p95 is dominated by the own-latency tail and is only pinned as "goes up".
-  it('p50 of >= 1 service that uses the cache rises >= 25% vs baseline in the signature window', () => {
-    const p50 = CACHE_USERS.map((c) => ratio(c, 'p50', START + 6, START + 11))
-    expect(Math.max(...p50)).toBeGreaterThanOrEqual(1.25)
-    expect(ratio('auth', 'p50', START + 6, START + 11)).toBeGreaterThanOrEqual(1.25)
+  it(`R2/R3: p50 of ${P50_USER} (a cache user, fixed) rises >= 25% on the mean and >= 18.75% in every seed, in the signature window`, () => {
+    const fault = runs.map((r) => windowMean(r.fault, P50_USER, 'p50', WINDOW))
+    const base = runs.map((r) => windowMean(r.base, P50_USER, 'p50', WINDOW))
+    assertPass(effect(fault, base, { riseAtLeast: 0.25 }, SEEDS), `p50 of ${P50_USER}`)
   })
 
-  it('p95 of every cache user also goes up in the window', () => {
+  it('p95 of every cache user also goes up in the window (on the mean)', () => {
     for (const c of CACHE_USERS) expect(ratio(c, 'p95', START + 6, START + 11)).toBeGreaterThan(1)
   })
 })
 
-describe('F-4 — the fault shows outside the target', () => {
-  it(`${BACKING} RPS deviates >= 25% in the signature window`, () => {
-    expect(ratio(BACKING, 'rps', START + 6, START + 11)).toBeGreaterThanOrEqual(1.25)
+describe('F-4 — the fault shows outside the target (E1–E4, fixed pair)', () => {
+  it(`(${F4_PAIR.component}, ${F4_PAIR.metric}) is an eligible indirect signal in every seed`, () => {
+    const result = assertEligibleF4(
+      F4_PAIR,
+      runs.map((r) => r.base),
+      runs.map((r) => r.fault),
+      TARGET,
+      { window: WINDOW, seeds: SEEDS },
+    )
+    expect(result.direction).toBe('rise')
+    expect(result.result.pass).toBe(true)
   })
 
-  it.each(['auth', 'catalog', 'cart'])('connections of %s (db pool) deviate >= 25% in the signature window', (component) => {
-    expect(ratio(component, 'connections', START + 6, START + 11)).toBeGreaterThanOrEqual(1.25)
+  it(`E2: the RPS of ${BACKING} is below the eligibility floor (1 req/s) on the baseline, so it is not the F-4 pair`, () => {
+    expect(() =>
+      assertEligibleF4({ component: BACKING, metric: 'rps' }, runs.map((r) => r.base), runs.map((r) => r.fault), TARGET, { window: WINDOW, seeds: SEEDS }),
+    ).toThrow(/E2/)
   })
 })
 
@@ -124,8 +161,8 @@ describe('the cache itself looks fine after the restart (SPEC §3.4)', () => {
       expect(meanOver(fault, TARGET, 'rps', START, START)).toBe(0)
       expect(fault.some((r) => r.type === 'log' && r.tick === START && r.message === 'connection refused' && r.attrs?.['peerInstance'] === `${TARGET}-0`)).toBe(true)
       expect(fault.some((r) => r.type === 'log' && r.tick > START && r.message === 'connection refused')).toBe(false)
-      expect(windowMean(fault, TARGET, 'rps')).toBeGreaterThanOrEqual(windowMean(base, TARGET, 'rps') * 0.9)
-      expect(windowMean(fault, TARGET, 'errorPct')).toBe(0)
+      expect(windowMean(fault, TARGET, 'rps', WINDOW)).toBeGreaterThanOrEqual(windowMean(base, TARGET, 'rps', WINDOW) * 0.9)
+      expect(windowMean(fault, TARGET, 'errorPct', WINDOW)).toBe(0)
     }
   })
 

@@ -12,7 +12,7 @@
  *
  * The cache keeps answering (its RPS does not drop after the restart tick): a forced miss is still a
  * call to the cache, followed by the `onMiss` call. What moves is emergent (SPEC §3.3): the backing
- * store's RPS and latency, and the p95 of every service that uses the cache, all derived from the
+ * store's RPS and latency, and the p50 of every service that uses the cache, all derived from the
  * spans the miss path generates. The cache itself looks healthy again right after the restart
  * (SPEC §3.4: the pain shows elsewhere).
  *
