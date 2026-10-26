@@ -60,8 +60,22 @@ O motor é publicado como **tarball anexado a um GitHub Release** do repositóri
 - **`pnpm --filter ./packages/engine pack`:** falha no pnpm 9.12 (ADR-007 Emenda 2).
 - **T1.29 criar o Release como pré-release:** publicaria antes do Gate 1; o Diretor reservou a publicação ao Release, depois do GATE-1.
 
+## Emenda 1 — 2026-10-26 (decisão do Diretor): artifact de CI não é distribuição
+
+**Decisão do Diretor (2026-10-26, textual):** "artifact de CI gerado a partir de main é snapshot de desenvolvimento e não tem garantia de bytes; a única distribuição válida é o asset da GitHub Release apontada por tag. Bump de versão acontece exclusivamente no commit de release." Não exige versão nova por mudança de README.
+
+**Por que nesta ADR e não na ADR-007:** a ADR-009 decide o canal de publicação (B-1) e quem publica (T1.29 = artifact de CI; Release = tag e GitHub Release). A regra trata exatamente disso: o que conta como distribuição e quando a versão muda. A ADR-007 fixa o pacote em si (`bin`, `files`, `dependencies`, comando de pack, nome do artifact na Emenda 3) e não muda.
+
+**Leitura:**
+
+- O artifact `whodeployed-engine-<version>` (ADR-007 Emenda 3) gerado em qualquer commit de `main` serve para CI e desenvolvimento. Ninguém deve instalar a partir dele nem citá-lo como versão publicada. Como `<version>` vem de `packages/engine/package.json` e a versão só muda no commit de release, artifacts de commits diferentes podem ter o mesmo nome e bytes diferentes. Exemplo: `README.md` está em `files` (ADR-007), então uma mudança de README em `main` depois de `engine-v0.1.0` gera outro `whodeployed-engine-0.1.0.tgz`, diferente do asset do Release. Isso é esperado e não pede versão nova.
+- **A única distribuição válida** é o asset `whodeployed-engine-<version>.tgz` do GitHub Release apontado pela tag `engine-v<version>`. Instruções de instalação (README, PRDs, roteiros de teste, gates) apontam para a URL desse asset.
+- **Bump de versão** (`version` em `packages/engine/package.json`) só acontece no commit de release (como `d22fba5`, PR #74, para `0.1.0`), feito pelo agente Release depois do gate. Nenhuma tarefa de engenharia muda a versão.
+- **Relação com o texto acima.** O que a seção "Consequências" diz sobre o asset ter "o mesmo conteúdo do artifact de CI daquele commit" e sobre o roteiro de PUB-4 contra o artifact de CI ("mesmos bytes do futuro asset") vale só para o artifact gerado **no commit da tag**. É a reprodutibilidade verificada (item 4 da verificação: build limpo + pack = mesmo SHA-256), não uma garantia sobre artifacts de outros commits de `main`. O texto acima não é alterado.
+
 ## Histórico
 
 - 2026-10-25 — aceita pelo Diretor: canal = tarball em GitHub Release (B-1).
 - 2026-10-26 — revista: comando do asset `pnpm --dir packages/engine pack --pack-destination dist/` (decisão delegada, SPEC §12, aprovada pelo Diretor); T1.29 = artifact de CI + README + teste de instalação isolada; Release (tag `engine-v0.1.0`) = agente Release após GATE-1; verificação do comando e consequência do `.tgz` dentro de `dist/`. Issue #58, PR #67.
 - 2026-10-26 — nome do artifact de CI: `whodeployed-engine-tarball` → `whodeployed-engine-<version>` (decisão do Diretor; ADR-007 Emenda 3; #64). Nada mais muda.
+- 2026-10-26 — Emenda 1 (decisão do Diretor): artifact de CI gerado a partir de `main` é snapshot de desenvolvimento, sem garantia de bytes; a única distribuição válida é o asset do GitHub Release apontado por tag; bump de versão só no commit de release; mudança de README não exige versão nova. Registrada aqui, não na ADR-007, por ser regra de canal de publicação. Linhas anteriores da ADR mantidas (decisão do Diretor).
