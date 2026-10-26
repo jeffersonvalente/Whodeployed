@@ -1,6 +1,6 @@
 # ADR-011 — Pré e pós-teste com dois incidentes inéditos de dificuldade equivalente
 
-- **Status:** proposta, aguardando aprovação do Diretor
+- **Status:** aceita (2026-10-26)
 - **Data:** 2026-10-26
 - **Decisor:** Diretor (Jefferson Valente). Mudança de SPEC §2 e §10: só o Diretor altera `SPEC.md` (SPEC §9, regra 4). O Arquiteto redige a ADR e o PR por pedido do Diretor.
 - **Referência:** SPEC §2 ("Como medir"), §8 (Gate 2), §10 (métricas de aprendizado), §11 (gamesmanship); PRD FASE-2 (PR #75: CN-1, CN-3, CN-9, PR-4, PR-15, TH-5, TH-6, Roteiro); ADR-004 (catálogo de `FaultKind`)
@@ -19,7 +19,7 @@ O PM levou o desenho ao Diretor no PR #75 (PRD FASE-2). O Diretor aprovou pré e
 Decisão do Diretor (2026-10-26, textual): "SPEC §2 — opção 1. [...] emendando SPEC §2 (“Como medir”) e §10 (linha de aprendizado) para: “pré e pós-teste com dois incidentes inéditos de dificuldade equivalente, ausentes da campanha, gerados a partir de FaultKinds existentes com seed e noise próprios; ordem contrabalanceada entre testadores quando houver mais de um”."
 
 1. **SPEC §2, "Como medir":** "pré e pós-teste com o mesmo incidente inédito" é substituído pelo texto do Diretor. O resto da frase não muda: a métrica (sinais pedidos até a hipótese correta e mitigação dentro do orçamento de impacto) e "Detalhes na seção 10".
-2. **SPEC §10, linha "Aprendizado: sinais pedidos até hipótese correta"**, coluna "Como coletar": "Pré e pós-teste com cenário inédito (não da campanha)" é substituído pelo texto do Diretor; "log de ações exportado pelo jogador" e o alvo ("Redução ≥ 30% entre pré e pós") não mudam. A linha seguinte ("mitigou dentro do orçamento de impacto", coletada pelo "Mesmo teste") herda a mudança sem edição.
+2. **SPEC §10, linha "Aprendizado: sinais pedidos até hipótese correta"**, coluna "Como coletar": "Pré e pós-teste com cenário inédito (não da campanha)" é substituído pelo texto do Diretor; "log de ações exportado pelo jogador" e o alvo ("Redução ≥ 30% entre pré e pós") não mudam. A 1ª coluna passa ao plural ("nos incidentes de teste"), por ajuste do Diretor. A linha seguinte ("mitigou dentro do orçamento de impacto", coletada pelo "Mesmo teste") herda a mudança sem edição.
 3. O contrato do motor (SPEC §6) não muda. "Gerados a partir de FaultKinds existentes" quer dizer: os incidentes de teste usam o catálogo de ADR-004 como está; nenhum `FaultKind` novo é criado para o teste. "Seed e noise próprios" quer dizer: `seed` e `noise` do YAML de cada incidente de teste são diferentes dos da campanha e diferentes entre si.
 
 ## Motivo
@@ -47,3 +47,4 @@ Eliminar o efeito de prática na métrica de §10. Com dois incidentes diferente
 ## Histórico
 
 - 2026-10-26 — proposta pelo Arquiteto a pedido do Diretor (decisão "SPEC §2 — opção 1"), com PR emendando SPEC §2 e §10. Número ajustado de 010 para 011 por colisão com `ADR-010-telemetry-immutability.md`.
+- 2026-10-26 — aceita pelo Diretor no PR #78, com dois ajustes: 1ª coluna da §10 no plural ("nos incidentes de teste") e cabeçalho do SPEC para "Versão 1.1 · 2026-10-26" com linha de changelog apontando para esta ADR. O ponto e vírgula na §10 foi mantido.
