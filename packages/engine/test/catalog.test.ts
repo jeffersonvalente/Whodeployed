@@ -18,7 +18,7 @@ const ADR_004: Record<
   }],
   disk_full: [2, 'postgres', 'database', {
     fillTicks: [3, 0, 30, true, 'ticks'],
-    failRatio: [0.4, 0.05, 1, false, 'ratio'],
+    failRatio: [0.9, 0.05, 1, false, 'ratio'],
   }],
   connection_pool_exhaustion: [3, 'payment', 'service', {
     poolSize: [20, 1, 500, true, 'connections'],

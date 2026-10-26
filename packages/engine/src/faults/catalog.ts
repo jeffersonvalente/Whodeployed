@@ -54,7 +54,9 @@ export const faultCatalog: FaultCatalog = {
         description: 'Ticks of high disk usage warnings before requests start failing.',
       },
       failRatio: {
-        default: 0.4,
+        // 0.9 (ADR-004 Emenda 3, T1.36): the only value of {0.6, 0.7, 0.8, 0.9} with 0 R3/R4
+        // violations (orders-worker error % and postgres) over seeds arch-0..arch-19999.
+        default: 0.9,
         min: 0.05,
         max: 1,
         integer: false,

@@ -221,12 +221,12 @@ describe('invalid input throws EngineError (F-7)', () => {
   it('a missing key and an explicit undefined still take the catalog default', () => {
     const expected = resolveFaults([{ kind: 'disk_full' }], world)
     expect(expected).toStrictEqual([
-      { kind: 'disk_full', target: 'postgres', startTick: 10, params: { fillTicks: 3, failRatio: 0.4 } },
+      { kind: 'disk_full', target: 'postgres', startTick: 10, params: { fillTicks: 3, failRatio: 0.9 } },
     ])
     const explicit = { kind: 'disk_full', target: undefined, startTick: undefined, params: undefined }
     expect(resolveFaults([explicit as unknown as FaultInput], world)).toStrictEqual(expected)
     const paramUndefined = { kind: 'disk_full', params: { failRatio: undefined, fillTicks: 5 } }
-    expect(resolveFaults([paramUndefined as unknown as FaultInput], world)[0]?.params).toStrictEqual({ fillTicks: 5, failRatio: 0.4 })
+    expect(resolveFaults([paramUndefined as unknown as FaultInput], world)[0]?.params).toStrictEqual({ fillTicks: 5, failRatio: 0.9 })
   })
 
   it('reports the received value', () => {
