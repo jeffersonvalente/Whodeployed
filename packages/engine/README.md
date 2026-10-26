@@ -73,8 +73,9 @@ installed.
 ### The tarball in `packages/engine/dist/`
 
 CI packs the engine into `packages/engine/dist/` and keeps the tarball as the
-`whodeployed-engine-tarball` artifact of each workflow run (Actions tab of the repository; the
-download is a zip holding the `.tgz`). A release asset is packed the same way. To produce the
+`whodeployed-engine-<version>` artifact of each workflow run, with `<version>` taken from
+`packages/engine/package.json` (for example `whodeployed-engine-0.1.0`; Actions tab of the
+repository; the download is a zip holding the `.tgz`). A release asset is packed the same way. To produce the
 same file locally, from the repository root:
 
 ```sh

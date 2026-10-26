@@ -25,7 +25,7 @@ A restrição estrutural de ADR-001 ("sem dependências de runtime") prevalece s
 - ESM (`"type": "module"`), `tsc -p tsconfig.build.json` emite `dist/` (JS + `.d.ts`); imports relativos com extensão `.js` (NodeNext).
 - Nome do binário: **`whodeployed-engine`**, `bin` → `dist/cli/main.js` (com shebang `#!/usr/bin/env node`).
 - **`$CLI` do PRD** = `node packages/engine/dist/cli/main.js`, depois de `pnpm --filter ./packages/engine build`. É o mesmo código que o tarball publica, o que torna a comparação de PUB-1 direta. (`pnpm run` não serve como `$CLI` porque imprime cabeçalho no stdout.)
-- Nome provisório do pacote: `@whodeployed/engine`, versão `0.1.0-alpha.0`, `"license": "Apache-2.0"`, sem `private`. O nome definitivo depende de B-1 e muda só o campo `name`; o `bin` não muda.
+- Nome provisório do pacote: `@whodeployed/engine`, versão `0.1.0` (publicada como `engine-v0.1.0`; até o release era `0.1.0-alpha.0`, ver Emenda 3), `"license": "Apache-2.0"`, sem `private`. O nome definitivo depende de B-1 e muda só o campo `name`; o `bin` não muda.
 - `files`: `["dist", "README.md", "LICENSE"]` (PUB-2). `dist/` não contém testes porque `tsconfig.build.json` inclui só `src/`.
 
 ### Interface do CLI
@@ -73,8 +73,20 @@ Implementação de tudo abaixo: T1.23.
 
 ## Emenda 2 — 2026-10-25 (issue #58)
 
-**Fato (reproduzido pelo Arquiteto):** com o pnpm fixado em `packageManager` (`pnpm@9.12.0`), `pnpm --filter ./packages/engine pack` sai com `ERROR Unknown option: 'recursive'`; `pnpm --dir packages/engine pack` gera `whodeployed-engine-0.1.0-alpha.0.tgz`. É o mesmo pacote e o mesmo tarball, e é o que `scripts/pack-smoke.sh` (T1.26) e o README (T1.28) já usam.
+**Fato (reproduzido pelo Arquiteto):** com o pnpm fixado em `packageManager` (`pnpm@9.12.0`), `pnpm --filter ./packages/engine pack` sai com `ERROR Unknown option: 'recursive'`; `pnpm --dir packages/engine pack` gera `whodeployed-engine-0.1.0-alpha.0.tgz` (versão da época; hoje `whodeployed-engine-0.1.0.tgz`, Emenda 3). É o mesmo pacote e o mesmo tarball, e é o que `scripts/pack-smoke.sh` (T1.26) e o README (T1.28) já usam.
 
 **Decisão:** o comando de empacotamento do motor é **`pnpm --dir packages/engine pack`** (opção (a) de #58). O pnpm não é atualizado: trocar `packageManager` muda o lockfile e a stack fixada na ADR-001, só para um comando que já tem forma equivalente. A convenção do PRD ("comandos pnpm usam filtro por caminho") continua valendo para `build`, `test`, `lint` etc.; `pack` é a exceção, porque no pnpm 9.12 ele não é um comando recursivo.
 
 **Quem altera o texto:** PUB-1 em `docs/prd/FASE-1.md` é do PM; a linha "O asset é o tarball gerado por `pnpm --filter ./packages/engine pack`" da ADR-009 é do Diretor (decisor da ADR-009). O texto proposto para os dois está no PR desta emenda. Enquanto não mudarem, o QA lê o comando de PUB-1 e o da ADR-009 como `pnpm --dir packages/engine pack`, por esta emenda. Nenhum código muda.
+
+## Emenda 3 — 2026-10-26 (decisão do Diretor; #64)
+
+**Fato:** o Release publicou `engine-v0.1.0` (commit `d22fba5`, PR #74). `packages/engine/package.json` passou de `0.1.0-alpha.0` para **`0.1.0`**, e o asset do GitHub Release é `whodeployed-engine-0.1.0.tgz`. As menções a `0.1.0-alpha.0` acima foram atualizadas para a versão publicada; onde o texto registra uma medição feita antes do release (Emenda 2), o valor antigo fica, marcado como versão da época.
+
+**Decisão do Diretor (2026-10-26):** "atualizar a ADR-007 para a versão publicada e incluir a versão no nome do artifact de CI (whodeployed-engine-<version>)."
+
+- O artifact de CI da T1.29 (ADR-009) passa de `whodeployed-engine-tarball` para **`whodeployed-engine-<version>`**. `<version>` é lido de `packages/engine/package.json` no próprio job de CI (passo `engine-version` em `.github/workflows/ci.yml`), nunca fixado no YAML: quando a versão do pacote mudar, o nome do artifact muda junto, sem editar o workflow.
+- O mesmo passo falha se `packages/engine/dist/whodeployed-engine-<version>.tgz` não existir, para que o nome do artifact e o nome do `.tgz` de dentro não divirjam.
+- Não muda: `actions/upload-artifact` fixado por SHA, upload só de `packages/engine/dist/*.tgz`, comando de pack (Emenda 2), bytes do tarball, `bin`, `files`, `dependencies` vazio.
+- Registros históricos (`docs/gates/GATE-1.md`, `docs/release/v0.1-engine.md`) citam o nome antigo e não são alterados. Isso fecha a nota do QA do PR #73 e o item 6 das divergências do GATE-1.
+

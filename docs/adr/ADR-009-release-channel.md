@@ -27,7 +27,7 @@ O motor é publicado como **tarball anexado a um GitHub Release** do repositóri
 ### Quem faz o quê
 
 - **T1.29 (Eng. Motor, fase 1) não publica GitHub Release nem cria tag.** Ela fecha com:
-  1. o tarball gerado em CI pelo comando acima e anexado como **artifact do workflow** (não é Release, não é público fora do GitHub Actions);
+  1. o tarball gerado em CI pelo comando acima e anexado como **artifact do workflow** `whodeployed-engine-<version>`, com `<version>` lido de `packages/engine/package.json` em CI (não é Release, não é público fora do GitHub Actions; nome desde 2026-10-26, ADR-007 Emenda 3);
   2. o comando de pack documentado no `packages/engine/README.md`;
   3. teste de instalação isolada: num diretório limpo fora do repositório, `npm install` do tarball de `packages/engine/dist/*.tgz` e execução do CLI instalado (`npx whodeployed-engine simulate --seed pub --fault connection_pool_exhaustion --ticks 30`), com saída byte-idêntica à de `$CLI` com os mesmos argumentos (o roteiro de PUB-1).
 - **Release (agente Release), só depois do `docs/gates/GATE-1.md` aprovado:** cria a tag `engine-v0.1.0` e o GitHub Release, com o tarball gerado pelo mesmo comando, no commit da tag, como asset. Repete o roteiro de PUB-1 instalando a partir da URL do asset (`npm install <url-do-asset>`) num diretório vazio.
@@ -64,3 +64,4 @@ O motor é publicado como **tarball anexado a um GitHub Release** do repositóri
 
 - 2026-10-25 — aceita pelo Diretor: canal = tarball em GitHub Release (B-1).
 - 2026-10-26 — revista: comando do asset `pnpm --dir packages/engine pack --pack-destination dist/` (decisão delegada, SPEC §12, aprovada pelo Diretor); T1.29 = artifact de CI + README + teste de instalação isolada; Release (tag `engine-v0.1.0`) = agente Release após GATE-1; verificação do comando e consequência do `.tgz` dentro de `dist/`. Issue #58, PR #67.
+- 2026-10-26 — nome do artifact de CI: `whodeployed-engine-tarball` → `whodeployed-engine-<version>` (decisão do Diretor; ADR-007 Emenda 3; #64). Nada mais muda.
