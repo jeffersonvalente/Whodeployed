@@ -204,7 +204,43 @@ describe('ask() — Q-3: asking never changes the simulation', () => {
     expect(lastWeekRuns()).toHaveLength(0)
   })
 
-  it.todo('writing to answer.data.records[0] throws TypeError (enable once T1.31 freezes store records, ADR-010)')
+  it('writing to answer.data.records[0] throws TypeError and changes neither the telemetry nor the next Answer (ADR-010, T1.31)', () => {
+    const sim = simAt(noisyConfig, 40)
+    const before = toNdjson(sim.telemetry().all() as TelemetryRecord[])
+    const question: Question = { kind: 'dashboard', service: 'gateway' }
+    const answer = sim.ask(question)
+    const snapshot = JSON.stringify(answer)
+    if (answer.data.kind !== 'dashboard') throw new Error('expected a dashboard signal')
+    const record = answer.data.records[0]!
+    expect(Object.isFrozen(record)).toBe(true)
+    expect(() => {
+      ;(record as { p95: number }).p95 = -1
+    }).toThrow(TypeError)
+    expect(() => {
+      delete (record as { rps?: number }).rps
+    }).toThrow(TypeError)
+
+    // The other record-carrying signals share the same frozen store records.
+    const logs = sim.ask({ kind: 'logs', service: 'gateway', window: 30 }).data
+    const changes = sim.ask({ kind: 'whatChanged', window: 40 }).data
+    const tr = sim.ask({ kind: 'trace', service: 'gateway', percentile: 95 }).data
+    if (logs.kind !== 'logs' || changes.kind !== 'whatChanged' || tr.kind !== 'trace') throw new Error('unexpected signal kinds')
+    expect(logs.entries.length).toBeGreaterThan(0)
+    expect(changes.events.length).toBeGreaterThan(0)
+    expect(tr.spans.length).toBeGreaterThan(0)
+    expect(() => {
+      ;(logs.entries[0] as { message: string }).message = 'x'
+    }).toThrow(TypeError)
+    expect(() => {
+      ;(changes.events[0] as { target: string }).target = 'x'
+    }).toThrow(TypeError)
+    expect(() => {
+      ;(tr.spans[0] as { durationMs: number }).durationMs = 0
+    }).toThrow(TypeError)
+
+    expect(toNdjson(sim.telemetry().all() as TelemetryRecord[])).toBe(before)
+    expect(JSON.stringify(sim.ask(question))).toBe(snapshot)
+  })
 })
 
 describe('ask() — Q-10: validation runs before the handler', () => {

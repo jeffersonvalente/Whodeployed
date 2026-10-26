@@ -1,10 +1,20 @@
 /**
- * T1.19 — fault `connection_pool_exhaustion` (ADR-004; PRD F-1, F-2, F-3 row 3, F-4; DET).
+ * T1.19 / T1.37 — fault `connection_pool_exhaustion` (ADR-004 and its Emenda 2; PRD F-1, F-2,
+ * F-3 row 3, F-4, F-6 with `service_crash_loop`; DET).
  *
- * Signature assertions compare window means over >= 10 seeds (signature window = ticks
- * startTick+6 .. startTick+11), never per-trace or per-instance equality against the baseline
- * while the fault is active (ADR-003 §8). The trace clause of F-3 row 3 is checked through the
- * real `trace` question handler, i.e. on the trace a player would get for `trace payment p95`.
+ * Signature assertions follow the seed aggregation rule R1–R5 and the F-4 eligibility rules
+ * E1–E4 (PRD Emenda 2) through test/support/signature.ts: window means over the seeds of
+ * `signatureSeeds` (replaceable with ENGINE_QA_SEEDS), never per-trace or per-instance equality
+ * against the baseline while the fault is active (ADR-003 §8). The trace clause of F-3 row 3 is
+ * checked through the real `trace` question handler, i.e. on the trace a player would get for
+ * `trace payment p95`, in every window tick in which the target serves >= 1 request.
+ *
+ * R6 (PRD Emenda 3, PR #68; ADR-004 Emenda 3): a seed in which the target serves no request in
+ * the window of the faulted run (`exercised` false) is exempt from the per-seed floor of exactly
+ * three conditions of row 3: p95 of the target, p95 of the gateway and the F-4 pair (gateway, p95);
+ * it still enters the means (R2, R5). Connections at poolSize (R4) need no request and hold in
+ * every seed; the trace clause is per tick with a request. The share of unexercised seeds is
+ * capped at 2% over 1000 consecutive seeds, per case (pool alone, and the F-6 combination).
  */
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
@@ -28,6 +38,20 @@ import { serializeRecord, toNdjson } from '../../src/sim/serialize.js'
 import { createSimulation, simulate } from '../../src/sim/simulation.js'
 import { buildWorld } from '../../src/world/build.js'
 import { defaultShop } from '../../src/world/default-shop.js'
+import {
+  R6_MIN_SEEDS,
+  assertEligibleF4,
+  assertPass,
+  ceiling,
+  effect,
+  everySeed,
+  exercised,
+  r6Exemption,
+  signatureSeeds,
+  signatureWindow,
+  unexercisedShare,
+  windowMean,
+} from '../support/signature.js'
 import type { CallContext, FaultInput, LogRecord, MetricName, MetricRecord, SpanRecord, TelemetryRecord } from '../../src/types.js'
 
 const KIND = 'connection_pool_exhaustion'
@@ -35,9 +59,10 @@ const START = faultCatalog[KIND].defaultStartTick
 const TARGET = faultCatalog[KIND].defaultTarget
 const POOL = faultCatalog[KIND].params['poolSize']!.default
 const TIMEOUT = faultCatalog[KIND].params['acquireTimeoutMs']!.default
-const WINDOW = Array.from({ length: 6 }, (_, i) => START + 6 + i)
+const LEAK = faultCatalog[KIND].params['leakPerTick']!.default
+const WINDOW = signatureWindow(START)
 const TICKS = START + 12
-const SEEDS = Array.from({ length: 12 }, (_, i) => `pool-${i}`)
+const SEEDS = signatureSeeds('pool')
 
 const pkgDir = fileURLToPath(new URL('../..', import.meta.url))
 const verifier = join(pkgDir, 'scripts', 'verify-coherence.mjs')
@@ -52,13 +77,6 @@ const metricOf = (records: readonly TelemetryRecord[], component: string, tick: 
   const m = records.find((r): r is MetricRecord => r.type === 'metric' && r.component === component && r.instance === instance && r.tick === tick)
   if (m === undefined) throw new Error(`no metric for ${component}/${instance ?? '*'} at ${tick}`)
   return m
-}
-
-/** Mean of an aggregate metric over the signature window and over all seeds. */
-function windowMean(runs: readonly (readonly TelemetryRecord[])[], component: string, metric: MetricName): number {
-  let total = 0
-  for (const records of runs) for (const tick of WINDOW) total += metricOf(records, component, tick)[metric]
-  return total / (runs.length * WINDOW.length)
 }
 
 const call = (over: Partial<CallContext> = {}): CallContext => ({
@@ -186,75 +204,134 @@ describe('F-2 — before startTick the fault is invisible', () => {
   })
 })
 
-describe(`F-3 row 3 — signature in the window, ${SEEDS.length} seeds, defaults`, () => {
-  const faulted = SEEDS.map((seed) => run(seed))
-  const base = SEEDS.map((seed) => baseline(seed))
+describe('ADR-004 Emenda 2 — invariant: with the defaults the pool is exhausted at the first tick of the window', () => {
+  it('leakedAt(6, leakPerTick, poolSize) >= poolSize (catalog defaults)', () => {
+    expect(LEAK).toBe(4)
+    expect(POOL).toBe(20)
+    // s = 6 is startTick + 6, the first tick of the signature window.
+    expect(WINDOW[0]! - START).toBe(6)
+    expect(leakedAt(6, LEAK, POOL)).toBeGreaterThanOrEqual(POOL)
+    // ... and therefore at every tick of the window (the leak never shrinks).
+    for (const tick of WINDOW) expect(leakedAt(tick - START, LEAK, POOL)).toBe(POOL)
+  })
+})
 
-  it('target: the connections metric reaches poolSize in >= 1 tick of the window (every seed)', () => {
-    const instances = defaultShop.services.find((s) => s.name === TARGET)!.replicas
-    for (const records of faulted) {
-      const reached = WINDOW.filter((tick) =>
-        Array.from({ length: instances }, (_, i) => `${TARGET}-${i}`).some((instance) => metricOf(records, TARGET, tick, instance).connections === POOL),
+/** Combined F-6 case of T1.37: the pool on payment plus a crash loop on catalog, both with defaults. */
+const WITH_CRASH_LOOP: readonly FaultInput[] = [{ kind: KIND }, { kind: 'service_crash_loop', target: 'catalog' }]
+
+/**
+ * F-3 row 3 read with R1–R5 (PRD Emenda 2) and F-4 with E1–E4, for the faults `inputs`.
+ * The same block runs for the pool alone and for the combined F-6 case.
+ */
+function rowThree(label: string, inputs: readonly FaultInput[]): void {
+  describe(`F-3 row 3 / F-4 — ${label}, ${SEEDS.length} seeds, defaults (R1–R5, E1–E4)`, () => {
+    const faulted = SEEDS.map((seed) => run(seed, inputs))
+    const base = SEEDS.map((seed) => baseline(seed))
+    const series = (runs: readonly (readonly TelemetryRecord[])[], component: string, metric: MetricName) =>
+      runs.map((records) => windowMean(records, component, metric, WINDOW))
+    // R6 (PRD Emenda 3): one exemption per exempted condition, flags from the faulted runs.
+    const r6 = (condition: 'targetP95' | 'gatewayP95' | 'f4Pair') => r6Exemption(KIND, condition, faulted, TARGET, WINDOW)
+
+    it('R4: the connections metric of the target reaches poolSize in >= 1 tick of the window, in every seed', () => {
+      const instances = defaultShop.services.find((s) => s.name === TARGET)!.replicas
+      const ids = Array.from({ length: instances }, (_, i) => `${TARGET}-${i}`)
+      assertPass(
+        everySeed(SEEDS, (_seed, i) => {
+          const records = faulted[i]!
+          const reached = WINDOW.some((tick) => ids.some((instance) => metricOf(records, TARGET, tick, instance).connections === POOL))
+          return reached || 'connections never reach poolSize in the window'
+        }),
+        'connections at poolSize',
       )
-      expect(reached.length).toBeGreaterThanOrEqual(1)
       // Never above the pool (connectionsCap).
-      for (const r of records) if (r.type === 'metric' && r.component === TARGET && r.instance !== undefined) expect(r.connections).toBeLessThanOrEqual(POOL)
-    }
-  })
-
-  it('target: p95 >= 3x the baseline', () => {
-    expect(windowMean(faulted, TARGET, 'p95')).toBeGreaterThanOrEqual(3 * windowMean(base, TARGET, 'p95'))
-  })
-
-  it('target: in the p95 trace of the target, once the pool is exhausted, one db.acquire span is >= 50% of the root', () => {
-    let checked = 0
-    for (const seed of SEEDS) {
-      const sim = createSimulation({ system: defaultShop, seed, faults: faultsOf(seed) })
-      sim.advance(WINDOW[0]! - 1)
-      let exhausted = 0
-      for (const tick of WINDOW) {
-        sim.advance(1)
-        // Exhausted = every instance of the target reports connections at poolSize (read from the
-        // telemetry, as a player would). Before that the pool still has a free connection and the
-        // target's traces have no wait at all.
-        const instances = sim.telemetry().metricsOf(TARGET, tick, tick).filter((m) => m.instance !== undefined)
-        if (!instances.every((m) => m.connections === POOL)) continue
-        exhausted += 1
-        const signal = trace({ kind: 'trace', service: TARGET, percentile: 95 }, { view: sim.telemetry(), lastWeek: () => sim.telemetry() })
-        if (signal.focusSpanId === null) continue
-        const focus = signal.spans.find((s) => s.spanId === signal.focusSpanId) as SpanRecord
-        const root = signal.spans.find((s) => s.parentId === undefined) as SpanRecord
-        const waits = signal.spans.filter((s) => s.parentId === focus.spanId && s.operation === ACQUIRE_OPERATION && s.kind === 'internal')
-        const longest = Math.max(0, ...waits.map((s) => s.durationMs))
-        // "Root" read both ways: the target's own server span (the root of its part of the trace,
-        // as in P-1) and the root of the whole trace (the gateway request).
-        expect(longest).toBeGreaterThanOrEqual(0.5 * focus.durationMs)
-        expect(longest).toBeGreaterThanOrEqual(0.5 * root.durationMs)
-        checked += 1
+      for (const records of faulted) {
+        for (const r of records) if (r.type === 'metric' && r.component === TARGET && r.instance !== undefined) expect(r.connections).toBeLessThanOrEqual(POOL)
       }
-      expect(exhausted).toBeGreaterThanOrEqual(1)
-    }
-    expect(checked).toBeGreaterThanOrEqual(SEEDS.length)
-  })
+    })
 
-  it('indirect: gateway p95 rises >= 25% while gateway p50 stays <= 1.5x the baseline', () => {
-    const p95 = { base: windowMean(base, 'gateway', 'p95'), fault: windowMean(faulted, 'gateway', 'p95') }
-    const p50 = { base: windowMean(base, 'gateway', 'p50'), fault: windowMean(faulted, 'gateway', 'p50') }
-    expect(p95.fault).toBeGreaterThanOrEqual(1.25 * p95.base)
-    expect(p50.fault).toBeLessThanOrEqual(1.5 * p50.base)
-  })
+    it('R3: p95 of the target >= 3x the baseline (>= 2.5x in every exercised seed, R6)', () => {
+      assertPass(effect(series(faulted, TARGET, 'p95'), series(base, TARGET, 'p95'), { ratioAtLeast: 3 }, SEEDS, r6('targetP95')), 'target p95')
+    })
 
-  it('F-4: a metric of a component other than the target deviates >= 25% from the baseline', () => {
-    // The database sees the leaked connections its client holds (the DBA's view).
-    const conn = { base: windowMean(base, 'postgres', 'connections'), fault: windowMean(faulted, 'postgres', 'connections') }
-    expect(conn.base).toBeGreaterThan(0)
-    expect((conn.fault - conn.base) / conn.base).toBeGreaterThanOrEqual(0.25)
-  })
+    it('R4: in each window tick in which the target serves >= 1 request, a db.acquire span of its p95 trace is >= 50% of the root, in every seed', () => {
+      assertPass(
+        everySeed(SEEDS, (seed, i) => {
+          let checked = 0
+          const sim = createSimulation({ system: defaultShop, seed, faults: faultsOf(seed, inputs) })
+          sim.advance(WINDOW[0]! - 1)
+          for (const tick of WINDOW) {
+            sim.advance(1)
+            const aggregate = sim.telemetry().metricsOf(TARGET, tick, tick).find((m) => m.instance === undefined)!
+            if (aggregate.rps === 0) continue
+            const signal = trace({ kind: 'trace', service: TARGET, percentile: 95 }, { view: sim.telemetry(), lastWeek: () => sim.telemetry() })
+            if (signal.focusSpanId === null) return `tick ${tick}: target has requests but no p95 trace`
+            const focus = signal.spans.find((s) => s.spanId === signal.focusSpanId) as SpanRecord
+            const root = signal.spans.find((s) => s.parentId === undefined) as SpanRecord
+            const waits = signal.spans.filter((s) => s.parentId === focus.spanId && s.operation === ACQUIRE_OPERATION && s.kind === 'internal')
+            const longest = Math.max(0, ...waits.map((s) => s.durationMs))
+            // "Root" read both ways: the target's own server span (the root of its part of the
+            // trace, as in P-1) and the root of the whole trace (the gateway request).
+            if (longest < 0.5 * focus.durationMs) return `tick ${tick}: db.acquire ${longest} ms < 50% of the target span ${focus.durationMs} ms`
+            if (longest < 0.5 * root.durationMs) return `tick ${tick}: db.acquire ${longest} ms < 50% of the root ${root.durationMs} ms`
+            checked += 1
+          }
+          // The rps of the aggregate and the server spans agree: an exercised seed has >= 1 tick to check.
+          const ex = exercised(faulted[i]!, TARGET, WINDOW)
+          if (ex !== checked > 0) return `exercised ${ex} but ${checked} ticks with requests`
+          return true
+        }),
+        'db.acquire share of the p95 trace',
+      )
+    })
 
-  it('timed-out acquisitions leave `connection pool timeout` error logs on the target', () => {
-    const logs = faulted.flatMap((records) => records.filter((r): r is LogRecord => r.type === 'log' && r.message === POOL_TIMEOUT))
-    expect(logs.length).toBeGreaterThan(0)
-    expect(logs.every((l) => l.component === TARGET && l.level === 'error' && l.attrs?.['poolSize'] === POOL)).toBe(true)
+    it('R3: gateway p95 rises >= 25% (>= 18.75% in every exercised seed, R6)', () => {
+      assertPass(effect(series(faulted, 'gateway', 'p95'), series(base, 'gateway', 'p95'), { riseAtLeast: 0.25 }, SEEDS, r6('gatewayP95')), 'gateway p95')
+    })
+
+    it('R5: gateway p50 stays <= 1.5x the baseline (mean over seeds)', () => {
+      assertPass(ceiling(series(faulted, 'gateway', 'p50'), series(base, 'gateway', 'p50'), { ratioAtMost: 1.5 }, SEEDS), 'gateway p50')
+    })
+
+    it('F-4: fixed eligible pair (gateway, p95), in every exercised seed (E1–E4, R6)', () => {
+      const r = assertEligibleF4({ component: 'gateway', metric: 'p95' }, base, faulted, TARGET, { window: WINDOW, seeds: SEEDS, exempt: r6('f4Pair') })
+      expect(r.direction).toBe('rise')
+    })
+
+    it('timed-out acquisitions leave `connection pool timeout` error logs on the target', () => {
+      const logs = faulted.flatMap((records) => records.filter((r): r is LogRecord => r.type === 'log' && r.message === POOL_TIMEOUT))
+      expect(logs.length).toBeGreaterThan(0)
+      expect(logs.every((l) => l.component === TARGET && l.level === 'error' && l.attrs?.['poolSize'] === POOL)).toBe(true)
+    })
+  })
+}
+
+rowThree('connection_pool_exhaustion alone', [{ kind: KIND }])
+rowThree('F-6: + service_crash_loop on catalog', WITH_CRASH_LOOP)
+
+/** R6 ceiling: 1000 consecutive seeds; only faulted runs are needed (exercised reads the faulted run). */
+const R6_SEEDS = Array.from({ length: R6_MIN_SEEDS }, (_, i) => `pool-r6-${i}`)
+const R6_TIMEOUT_MS = 300_000
+
+describe('R6 — share of seeds in which the target serves no request in the window <= 2%, per case (1000 consecutive seeds, PRD Emenda 3)', () => {
+  it.each([
+    ['connection_pool_exhaustion alone', [{ kind: KIND }]],
+    ['F-6: + service_crash_loop on catalog', WITH_CRASH_LOOP],
+  ] as const)(
+    '%s',
+    (_label, inputs) => {
+      const flags = R6_SEEDS.map((seed) => exercised(run(seed, inputs), TARGET, WINDOW))
+      const r = unexercisedShare(R6_SEEDS, flags)
+      assertPass(r, 'R6 unexercised share')
+      expect(r.seeds).toBe(1000)
+    },
+    R6_TIMEOUT_MS,
+  )
+})
+
+describe('F-6 combined case — determinism', () => {
+  it('pool + crash loop: two runs give the same hash', () => {
+    const a = sha(toNdjson(run('det-f6', WITH_CRASH_LOOP, 40)))
+    expect(sha(toNdjson(run('det-f6', WITH_CRASH_LOOP, 40)))).toBe(a)
   })
 })
 

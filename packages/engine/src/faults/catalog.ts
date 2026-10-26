@@ -54,7 +54,9 @@ export const faultCatalog: FaultCatalog = {
         description: 'Ticks of high disk usage warnings before requests start failing.',
       },
       failRatio: {
-        default: 0.4,
+        // 0.9 (ADR-004 Emenda 3, T1.36): the only value of {0.6, 0.7, 0.8, 0.9} with 0 R3/R4
+        // violations (orders-worker error % and postgres) over seeds arch-0..arch-19999.
+        default: 0.9,
         min: 0.05,
         max: 1,
         integer: false,
@@ -81,7 +83,9 @@ export const faultCatalog: FaultCatalog = {
         description: 'Connection pool size per instance of the target (overrides dbPoolSize).',
       },
       leakPerTick: {
-        default: 2,
+        // 4 (ADR-004 Emenda 2): with poolSize 20 the pool is exhausted from s = 4, so the whole
+        // signature window (s = 6..11) is exhausted in every seed: leakedAt(6) >= poolSize.
+        default: 4,
         min: 0,
         max: 100,
         integer: true,
