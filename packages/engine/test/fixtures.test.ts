@@ -32,8 +32,8 @@ const fixturesDir = join(pkgDir, 'fixtures')
 const script = join(pkgDir, 'scripts', 'gen-fixtures.mjs')
 const mainTs = join(pkgDir, 'src', 'cli', 'main.ts')
 
-/** ADR-005 size budget per 60-tick NDJSON: 2 MB. */
-const MAX_BYTES = 2_000_000
+/** ADR-005 Emenda 2 size budget per 60-tick NDJSON: 3 MiB. */
+const MAX_BYTES = 3_145_728
 const TICKS = 60
 
 const sha = (text: string) => createHash('sha256').update(text, 'utf8').digest('hex')
@@ -89,7 +89,7 @@ describe('D-3 — fixtures/*.ndjson', () => {
     expect(ndjson).toEqual([...EXPECTED_FILES].sort())
   })
 
-  it.each(EXPECTED_FILES)('%s is <= 2 MB and covers ticks 0..59', (file) => {
+  it.each(EXPECTED_FILES)('%s is <= 3 MiB and covers ticks 0..59', (file) => {
     const path = join(fixturesDir, file)
     expect(existsSync(path), `${file} is missing: run the fixtures script`).toBe(true)
     expect(statSync(path).size).toBeLessThanOrEqual(MAX_BYTES)
@@ -109,7 +109,7 @@ describe('D-3 / DET — regenerating in memory gives the committed bytes', () =>
     expect(existsSync(path), `${file} is missing: run the fixtures script`).toBe(true)
     const committed = readFileSync(path, 'utf8')
     const fresh = regenerate(args)
-    // Hash first, so a mismatch reports two short strings instead of a 2 MB diff.
+    // Hash first, so a mismatch reports two short strings instead of a multi-MB diff.
     expect(sha(fresh), `${file} differs from a fresh run: regenerate with the fixtures script`).toBe(sha(committed))
     expect(fresh === committed).toBe(true)
   })
