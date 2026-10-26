@@ -7,7 +7,13 @@
  * `signatureSeeds` (replaceable with ENGINE_QA_SEEDS), never per-trace or per-instance equality
  * against the baseline while the fault is active (ADR-003 §8). The trace clause of F-3 row 3 is
  * checked through the real `trace` question handler, i.e. on the trace a player would get for
- * `trace payment p95`.
+ * `trace payment p95`, in every window tick in which the target serves >= 1 request.
+ *
+ * R6 (ADR-004 Emenda 3, proposed to the PM): a seed in which the target serves no request in the
+ * window of the faulted run (`exercised` false) is exempt from the per-seed floors measured on
+ * requests of the target or of its direct callers (p95 of the target, p95 of the gateway, F-4
+ * pair); it still enters the means (R2, R5). Connections at poolSize (R4) need no request and hold
+ * in every seed. The share of unexercised seeds is capped at 2% over 1000 consecutive seeds.
  */
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
@@ -31,7 +37,19 @@ import { serializeRecord, toNdjson } from '../../src/sim/serialize.js'
 import { createSimulation, simulate } from '../../src/sim/simulation.js'
 import { buildWorld } from '../../src/world/build.js'
 import { defaultShop } from '../../src/world/default-shop.js'
-import { assertEligibleF4, assertPass, ceiling, effect, everySeed, signatureSeeds, signatureWindow, windowMean } from '../support/signature.js'
+import {
+  R6_MIN_SEEDS,
+  assertEligibleF4,
+  assertPass,
+  ceiling,
+  effect,
+  everySeed,
+  exercised,
+  signatureSeeds,
+  signatureWindow,
+  unexercisedShare,
+  windowMean,
+} from '../support/signature.js'
 import type { CallContext, FaultInput, LogRecord, MetricName, MetricRecord, SpanRecord, TelemetryRecord } from '../../src/types.js'
 
 const KIND = 'connection_pool_exhaustion'
@@ -209,6 +227,8 @@ function rowThree(label: string, inputs: readonly FaultInput[]): void {
     const base = SEEDS.map((seed) => baseline(seed))
     const series = (runs: readonly (readonly TelemetryRecord[])[], component: string, metric: MetricName) =>
       runs.map((records) => windowMean(records, component, metric, WINDOW))
+    // R6: one flag per seed, from the faulted run.
+    const exempt = faulted.map((records) => !exercised(records, TARGET, WINDOW))
 
     it('R4: the connections metric of the target reaches poolSize in >= 1 tick of the window, in every seed', () => {
       const instances = defaultShop.services.find((s) => s.name === TARGET)!.replicas
@@ -227,14 +247,14 @@ function rowThree(label: string, inputs: readonly FaultInput[]): void {
       }
     })
 
-    it('R3: p95 of the target >= 3x the baseline (>= 2.5x in every seed)', () => {
-      assertPass(effect(series(faulted, TARGET, 'p95'), series(base, TARGET, 'p95'), { ratioAtLeast: 3 }, SEEDS), 'target p95')
+    it('R3: p95 of the target >= 3x the baseline (>= 2.5x in every exercised seed, R6)', () => {
+      assertPass(effect(series(faulted, TARGET, 'p95'), series(base, TARGET, 'p95'), { ratioAtLeast: 3 }, SEEDS, exempt), 'target p95')
     })
 
-    it('R4: in the p95 trace of the target of every window tick with >= 1 target request, a db.acquire span is >= 50% of the root, in every seed', () => {
-      let checked = 0
+    it('R4: in each window tick in which the target serves >= 1 request, a db.acquire span of its p95 trace is >= 50% of the root, in every seed', () => {
       assertPass(
-        everySeed(SEEDS, (seed) => {
+        everySeed(SEEDS, (seed, i) => {
+          let checked = 0
           const sim = createSimulation({ system: defaultShop, seed, faults: faultsOf(seed, inputs) })
           sim.advance(WINDOW[0]! - 1)
           for (const tick of WINDOW) {
@@ -253,23 +273,24 @@ function rowThree(label: string, inputs: readonly FaultInput[]): void {
             if (longest < 0.5 * root.durationMs) return `tick ${tick}: db.acquire ${longest} ms < 50% of the root ${root.durationMs} ms`
             checked += 1
           }
+          // The rps of the aggregate and the server spans agree: an exercised seed has >= 1 tick to check.
+          if (exercised(faulted[i]!, TARGET, WINDOW) !== checked > 0) return `exercised ${!exempt[i]} but ${checked} ticks with requests`
           return true
         }),
         'db.acquire share of the p95 trace',
       )
-      expect(checked).toBeGreaterThanOrEqual(SEEDS.length)
     })
 
-    it('R3: gateway p95 rises >= 25% (>= 18.75% in every seed)', () => {
-      assertPass(effect(series(faulted, 'gateway', 'p95'), series(base, 'gateway', 'p95'), { riseAtLeast: 0.25 }, SEEDS), 'gateway p95')
+    it('R3: gateway p95 rises >= 25% (>= 18.75% in every exercised seed, R6)', () => {
+      assertPass(effect(series(faulted, 'gateway', 'p95'), series(base, 'gateway', 'p95'), { riseAtLeast: 0.25 }, SEEDS, exempt), 'gateway p95')
     })
 
     it('R5: gateway p50 stays <= 1.5x the baseline (mean over seeds)', () => {
       assertPass(ceiling(series(faulted, 'gateway', 'p50'), series(base, 'gateway', 'p50'), { ratioAtMost: 1.5 }, SEEDS), 'gateway p50')
     })
 
-    it('F-4: fixed eligible pair (gateway, p95), in every seed (E1–E4)', () => {
-      const r = assertEligibleF4({ component: 'gateway', metric: 'p95' }, base, faulted, TARGET, { window: WINDOW, seeds: SEEDS })
+    it('F-4: fixed eligible pair (gateway, p95), in every exercised seed (E1–E4, R6)', () => {
+      const r = assertEligibleF4({ component: 'gateway', metric: 'p95' }, base, faulted, TARGET, { window: WINDOW, seeds: SEEDS, exempt })
       expect(r.direction).toBe('rise')
     })
 
@@ -283,6 +304,26 @@ function rowThree(label: string, inputs: readonly FaultInput[]): void {
 
 rowThree('connection_pool_exhaustion alone', [{ kind: KIND }])
 rowThree('F-6: + service_crash_loop on catalog', WITH_CRASH_LOOP)
+
+/** R6 ceiling: 1000 consecutive seeds; only faulted runs are needed (exercised reads the faulted run). */
+const R6_SEEDS = Array.from({ length: R6_MIN_SEEDS }, (_, i) => `pool-r6-${i}`)
+const R6_TIMEOUT_MS = 300_000
+
+describe('R6 — share of seeds in which the target serves no request in the window <= 2% (1000 consecutive seeds)', () => {
+  it.each([
+    ['connection_pool_exhaustion alone', [{ kind: KIND }]],
+    ['F-6: + service_crash_loop on catalog', WITH_CRASH_LOOP],
+  ] as const)(
+    '%s',
+    (_label, inputs) => {
+      const flags = R6_SEEDS.map((seed) => exercised(run(seed, inputs), TARGET, WINDOW))
+      const r = unexercisedShare(R6_SEEDS, flags)
+      assertPass(r, 'R6 unexercised share')
+      expect(r.seeds).toBe(1000)
+    },
+    R6_TIMEOUT_MS,
+  )
+})
 
 describe('F-6 combined case — determinism', () => {
   it('pool + crash loop: two runs give the same hash', () => {

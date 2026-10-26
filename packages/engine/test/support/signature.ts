@@ -14,6 +14,13 @@
  * - R3: in every seed the effect goes in the same direction and has >= 75% of the required size.
  * - R4: existence conditions hold in every seed (`everySeed`).
  * - R5: ceilings and comparisons hold only on the mean (`ceiling`).
+ * - R6 (proposed to the PM in ADR-004 Emenda 3; T1.37): a seed in which the fault target serves no
+ *   request in the window of the faulted run (`exercised` is false) is exempt from the per-seed
+ *   floors (R3, and E3/E4 of F-4) measured on requests of the target or of its direct callers.
+ *   The caller passes `exempt` (one flag per seed) to `effect` / `assertEligibleF4`; exempt seeds
+ *   still enter the means (R2, R5). Existence conditions that need no request (R4, `everySeed`)
+ *   have no exemption. The share of unexercised seeds over >= 1000 consecutive seeds is capped at
+ *   2% (`unexercisedShare`).
  */
 import type { MetricName, MetricRecord, TelemetryRecord } from '../../src/types.js'
 
@@ -92,6 +99,64 @@ export function windowMean(
   return total / window.length
 }
 
+/** R6: maximum share of unexercised seeds (target serves no request in the window). */
+export const R6_MAX_UNEXERCISED_SHARE = 0.02
+/** R6: minimum number of consecutive seeds over which the share is measured. */
+export const R6_MIN_SEEDS = 1000
+
+/**
+ * R6: number of `server` spans of `target` whose tick is in `window`, in one run. A trace is
+ * stamped with the tick in which it started, and a request served by the target is exactly one
+ * server span of the target.
+ */
+export function servedRequests(records: readonly TelemetryRecord[], target: string, window: readonly number[]): number {
+  if (window.length === 0) throw new Error('servedRequests: empty window')
+  const ticks = new Set(window)
+  let n = 0
+  for (const r of records) if (r.type === 'span' && r.kind === 'server' && r.component === target && ticks.has(r.tick)) n += 1
+  return n
+}
+
+/**
+ * R6: true when the target serves >= 1 request in the window of this run (>= 1 `server` span of
+ * the target with its tick in the window). Called on the faulted run of each seed.
+ */
+export function exercised(records: readonly TelemetryRecord[], target: string, window: readonly number[]): boolean {
+  return servedRequests(records, target, window) > 0
+}
+
+export interface UnexercisedShareResult {
+  /** Number of seeds measured. */
+  seeds: number
+  /** Seeds in which the target is not exercised, in order. */
+  unexercised: string[]
+  /** unexercised / seeds. */
+  share: number
+  pass: boolean
+  message: string
+}
+
+/**
+ * R6 ceiling: over >= 1000 consecutive seeds (`seeds[i]` labels `isExercised[i]`), the share of
+ * seeds in which the target is not exercised must be <= 2%; above it the fault is badly
+ * parameterised and the criterion fails. Fewer than 1000 seeds, or lists of different length, throw.
+ */
+export function unexercisedShare(seeds: readonly string[], isExercised: readonly boolean[]): UnexercisedShareResult {
+  if (seeds.length !== isExercised.length) throw new Error(`unexercisedShare: ${seeds.length} seeds, ${isExercised.length} flags`)
+  if (seeds.length < R6_MIN_SEEDS) throw new Error(`unexercisedShare: R6 needs >= ${R6_MIN_SEEDS} seeds; got ${seeds.length}`)
+  const unexercised = seeds.filter((_, i) => !isExercised[i])
+  const share = unexercised.length / seeds.length
+  const pass = share <= R6_MAX_UNEXERCISED_SHARE
+  const list = unexercised.length === 0 ? '' : `: ${unexercised.slice(0, 20).join(', ')}${unexercised.length > 20 ? ', ...' : ''}`
+  return {
+    seeds: seeds.length,
+    unexercised,
+    share,
+    pass,
+    message: `${unexercised.length}/${seeds.length} seeds unexercised (${(share * 100).toFixed(3)}%, need <= ${R6_MAX_UNEXERCISED_SHARE * 100}%)${pass ? '' : ' FAILS'}${list}`,
+  }
+}
+
 /** Size-of-effect conditions (R2 on the mean, R3 per seed). */
 export type EffectCond =
   /** faulted >= k x baseline; per seed >= 1 + 0.75 (k - 1). */
@@ -126,8 +191,10 @@ export interface EffectResult {
   perSeed: SeedValue[]
   /** Threshold every seed must meet (R3); equal to `required` for ceilings. */
   floor: number
-  /** Seeds that miss `floor`, with their value. */
+  /** Seeds that miss `floor`, with their value; never an exempt seed (R6). */
   failingSeeds: SeedValue[]
+  /** Seeds exempt from `floor` (R6), in seed order; they still enter `mean`. */
+  exemptSeeds: string[]
   pass: boolean
   /** Human-readable verdict citing the seeds and values that fail. */
   message: string
@@ -152,6 +219,11 @@ function ratio(f: number, b: number, what: string): number {
 
 const fmt = (x: number): string => (Number.isInteger(x) ? String(x) : x.toFixed(4))
 
+function exemptFlags(n: number, exempt: readonly boolean[] | undefined): readonly boolean[] {
+  if (exempt !== undefined && exempt.length !== n) throw new Error(`exempt (R6): expected ${n} flags, got ${exempt.length}`)
+  return exempt ?? Array.from({ length: n }, () => false)
+}
+
 function verdict(name: string, r: Omit<EffectResult, 'message' | 'pass'>, atMost: boolean, perSeed: boolean): EffectResult {
   const meets = (v: number, t: number) => (atMost ? v <= t : v >= t)
   const op = atMost ? '<=' : '>='
@@ -159,11 +231,13 @@ function verdict(name: string, r: Omit<EffectResult, 'message' | 'pass'>, atMost
   const pass = meanOk && r.failingSeeds.length === 0
   const parts = [`${name}: mean ${fmt(r.mean)} (need ${op} ${fmt(r.required)})${meanOk ? '' : ' FAILS'}`]
   if (perSeed) {
+    const every = r.exemptSeeds.length === 0 ? 'every seed' : 'every non-exempt seed'
     parts.push(
       r.failingSeeds.length === 0
-        ? `every seed ${op} ${fmt(r.floor)}`
+        ? `${every} ${op} ${fmt(r.floor)}`
         : `seeds below the per-seed floor ${op} ${fmt(r.floor)}: ${r.failingSeeds.map((s) => `${s.seed}=${fmt(s.value)}`).join(', ')}`,
     )
+    if (r.exemptSeeds.length > 0) parts.push(`exempt (R6, target not exercised): ${r.exemptSeeds.join(', ')}`)
   }
   return { ...r, pass, message: parts.join('; ') }
 }
@@ -171,11 +245,23 @@ function verdict(name: string, r: Omit<EffectResult, 'message' | 'pass'>, atMost
 /**
  * Size-of-effect condition read with R2 (threshold on the mean over seeds) and R3 (75% floor in
  * every seed). `faulted[i]` and `base[i]` belong to the same seed (`seeds[i]`, used in messages).
- * A ratio condition with a baseline of 0 (mean or any seed) throws.
+ * A ratio condition with a baseline of 0 (mean or any non-exempt seed) throws.
+ *
+ * `exempt` (R6, one flag per seed): an exempt seed is left out of the per-seed floor but still
+ * enters the mean. Its per-seed value is reported for information (NaN when a ratio has a zero
+ * baseline in that seed, which is what an unexercised target gives). Only for conditions measured
+ * on requests of the fault target or of its direct callers.
  */
-export function effect(faulted: readonly number[], base: readonly number[], cond: EffectCond, seeds?: readonly string[]): EffectResult {
+export function effect(
+  faulted: readonly number[],
+  base: readonly number[],
+  cond: EffectCond,
+  seeds?: readonly string[],
+  exempt?: readonly boolean[],
+): EffectResult {
   checkSeries(faulted, base)
   const names = labels(faulted.length, seeds)
+  const isExempt = exemptFlags(faulted.length, exempt)
   const mf = mean(faulted)
   const mb = mean(base)
   let name: string
@@ -183,6 +269,8 @@ export function effect(faulted: readonly number[], base: readonly number[], cond
   let measure: (f: number, b: number, what: string) => number
   let required: number
   let floor: number
+  /** Ratio-based (needs a non-zero baseline); false only for p.p. */
+  const relative = !('ppAtLeast' in cond)
   if ('ratioAtLeast' in cond) {
     const k = cond.ratioAtLeast
     name = `ratio >= ${k}x`
@@ -209,9 +297,14 @@ export function effect(faulted: readonly number[], base: readonly number[], cond
     required = r
     floor = 1 - PER_SEED_SHARE * (1 - r)
   }
-  const perSeed = faulted.map((f, i) => ({ seed: names[i]!, value: measure(f, base[i]!, `seed ${names[i]!}`) }))
-  const failingSeeds = perSeed.filter((s) => (atMost ? !(s.value <= floor) : !(s.value >= floor)))
-  return verdict(name, { mean: measure(mf, mb, 'mean over seeds'), required, perSeed, floor, failingSeeds }, atMost, true)
+  const perSeed = faulted.map((f, i) => {
+    const b = base[i]!
+    const value = isExempt[i] && relative && !(b > 0) ? Number.NaN : measure(f, b, `seed ${names[i]!}`)
+    return { seed: names[i]!, value }
+  })
+  const failingSeeds = perSeed.filter((s, i) => !isExempt[i] && (atMost ? !(s.value <= floor) : !(s.value >= floor)))
+  const exemptSeeds = names.filter((_, i) => isExempt[i])
+  return verdict(name, { mean: measure(mf, mb, 'mean over seeds'), required, perSeed, floor, failingSeeds, exemptSeeds }, atMost, true)
 }
 
 /**
@@ -240,7 +333,7 @@ export function ceiling(faulted: readonly number[], reference: readonly number[]
     required = cond.ppWithin
   }
   const perSeed = faulted.map((f, i) => ({ seed: names[i]!, value: measure(f, reference[i]!, `seed ${names[i]!}`) }))
-  const result = { mean: measure(mean(faulted), mean(reference), 'mean over seeds'), required, perSeed, floor: required, failingSeeds: [] }
+  const result = { mean: measure(mean(faulted), mean(reference), 'mean over seeds'), required, perSeed, floor: required, failingSeeds: [], exemptSeeds: [] }
   return verdict(name, result, true, false)
 }
 
@@ -284,6 +377,11 @@ export interface F4Options {
   window: readonly number[]
   /** Seed labels, in the order of the runs. */
   seeds: readonly string[]
+  /**
+   * R6: one flag per seed; an exempt seed (target not exercised in the faulted run) is left out
+   * of the per-seed floor of E3/E4 but still enters the means (E2 and the mean of E3).
+   */
+  exempt?: readonly boolean[]
 }
 
 export interface F4Result {
@@ -332,13 +430,13 @@ export function assertEligibleF4(
   let result: EffectResult
   if (metric === 'errorPct') {
     direction = 'rise'
-    result = effect(f, b, { ppAtLeast: F4_ERROR_PP }, options.seeds)
+    result = effect(f, b, { ppAtLeast: F4_ERROR_PP }, options.seeds, options.exempt)
   } else if (mean(f) >= baselineMean) {
     direction = 'rise'
-    result = effect(f, b, { riseAtLeast: F4_DEVIATION }, options.seeds)
+    result = effect(f, b, { riseAtLeast: F4_DEVIATION }, options.seeds, options.exempt)
   } else {
     direction = 'drop'
-    result = effect(f, b, { ratioAtMost: 1 - F4_DEVIATION }, options.seeds)
+    result = effect(f, b, { ratioAtMost: 1 - F4_DEVIATION }, options.seeds, options.exempt)
   }
   if (!result.pass) throw new Error(`${tag}: E3/E4, ${result.message}`)
   return { pair, baselineMean, direction, result }
