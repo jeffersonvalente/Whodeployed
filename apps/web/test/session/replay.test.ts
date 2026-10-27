@@ -202,11 +202,58 @@ describe('replayLog finds the first divergent step (PR-14)', () => {
     expect(replayLog(log, juniorFixture, deps)).toMatchObject({ ok: false, seq: 1, field: 'answer' })
   })
 
-  it('format: a notebook step the session refuses (discard citing no previous answer)', () => {
+  it('format: a notebook step the session refuses (discard of an unknown hypothesis)', () => {
     const log = tamper(playJunior(), (raw) => {
       raw.steps.push({ seq: 5, tickBefore: raw.steps[3].tickBefore + raw.steps[3].tickCost, type: 'discard', hypothesisSeq: 99, citedSeqs: [99], tickCost: 0, impactAfter: raw.steps[3].impactAfter, wallMs: 0 })
     })
     expect(replayLog(log, juniorFixture, deps)).toMatchObject({ ok: false, seq: 5, field: 'format' })
+  })
+})
+
+/** A pleno session with the notebook (T2.23): hypothesis, discard citing answers, final hypothesis. */
+function playPlenoWithNotebook(): SessionLogV1 {
+  const session = createSession(plenoFixture, { engine: engineRuntime, wallClock: fakeClock(), engineVersion: '0.1.0', buildSha: 'unknown' })
+  session.ask({ kind: 'dashboard', service: 'gateway' })
+  const first = session.hypothesis('gateway', 'gateway is failing')
+  session.ask({ kind: 'compare', service: 'cart', metric: 'errorPct', by: 'instance' })
+  session.discard(first, [1, 3], 'gateway is only relaying cart errors')
+  const second = session.hypothesis('cart', 'one cart instance has the bad deploy')
+  session.act({ kind: 'rollback', target: 'cart' })
+  session.end({ kind: 'active', hypothesisSeq: second })
+  return session.log()
+}
+
+describe('replayLog with notebook steps (PR-9, PR-10, PR-14)', () => {
+  const base = playPlenoWithNotebook()
+
+  it('replays a session ended by the player', () => {
+    expect(base.steps.at(-1)).toMatchObject({ type: 'end', reason: 'player' })
+    expect(replayLog(exported(base), plenoFixture, deps)).toEqual({ ok: true, steps: base.steps.length })
+  })
+
+  it('notebook text is player input: the replay feeds it as the log has it and checks ticks and impact', () => {
+    const i = stepIndex(base, 'hypothesis', 1)
+    const edited = tamper(base, (raw) => (raw.steps[i].text = 'something else'))
+    expect(replayLog(edited, plenoFixture, deps).ok).toBe(true)
+    const moved = tamper(base, (raw) => (raw.steps[i].tickCost = 1))
+    expect(replayLog(moved, plenoFixture, deps)).toMatchObject({ ok: false, seq: i + 1, field: 'tickCost' })
+  })
+
+  it('format: a discard citing a non-ask step is refused', () => {
+    const i = stepIndex(base, 'discard')
+    const log = tamper(base, (raw) => (raw.steps[i].citedSeqs = [2]))
+    expect(replayLog(log, plenoFixture, deps)).toMatchObject({ ok: false, seq: i + 1, field: 'format' })
+  })
+
+  it('format: an invalid final.kind is a rejected log, never a crash (any error while re-executing)', () => {
+    const last = base.steps.length - 1
+    const log = tamper(base, (raw) => {
+      raw.steps[last].final = { kind: 'bogus' }
+      raw.finalHypothesis = { kind: 'bogus' }
+    })
+    let result: ReturnType<typeof replayLog> | undefined
+    expect(() => (result = replayLog(log, plenoFixture, deps))).not.toThrow()
+    expect(result).toMatchObject({ ok: false, seq: last + 1, field: 'format' })
   })
 })
 
