@@ -61,3 +61,12 @@ jobs:
           name: whodeployed-engine-${{ steps.engine-version.outputs.version }}
           path: packages/engine/dist/*.tgz
           if-no-files-found: error
+      # T2.31 (PR-21, ADR-015): static prototype build as a workflow artifact, only on push to main.
+      # Development snapshot with no byte guarantee (ADR-009 Emenda 1); not a Release, not Pages.
+      - name: Upload prototype build
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: whodeployed-prototype
+          path: apps/web/dist
+          if-no-files-found: error

@@ -1,6 +1,6 @@
 /**
  * Actions (ADR-012; PRD FASE-2 EN-4, EN-5): validation, cost, scheduling, the fault life cycle and
- * the `restart` primitive.
+ * the `restart` primitive with the reaction table and the cache rule.
  *
  * - `validateAction` checks an Action against the world (ADR-012 §2) and returns a frozen copy with
  *   the keys in contract order (kind, target). There is no player level anywhere (Q-1): who may use
@@ -16,12 +16,17 @@
  *   step 1 of the orchestrator: its `down` joins the faults' `down`, its events go after the fault
  *   events and before noise (ADR-005 Emenda 3).
  *
- * `restart X`: every instance of X is `down` in `te` (same mechanism as TickEffect.down, ADR-002
- * §5) and one `config` event with `restart: true` and no instance nor note is emitted in `te`.
- * The reaction of the faults of X to the process replacement (ADR-012 §5) and the cache rule are
- * task T2.3; `rollback` (deploy history, batches) is task T2.4: until then a rollback is validated,
- * costs its ticks and changes nothing, which is also its documented effect when the target has no
- * deploy to revert.
+ * - `faultActionReactions` is the data table of ADR-012 §5 (one row per FaultKind) and
+ *   `replaceProcess` applies it: the process replacement (SP) of ADR-012 §4, plus the cache rule.
+ *
+ * `restart X` (ADR-012 §4): SP of X, then every instance of X is `down` in `te` (same mechanism as
+ * TickEffect.down, ADR-002 §5) and one `config` event with `restart: true` and no instance nor
+ * note is emitted in `te`. When X is a cache, the cache rule induces a `cache_cold_start` on X from
+ * `te`, and the `down` tick and the `config` events are that module's own (ADR-004): the restart
+ * then emits no event nor `down` of its own, so nothing is duplicated.
+ * `rollback` (deploy history, batches) is task T2.4: until then a rollback is validated, costs its
+ * ticks and changes nothing, which is also its documented effect when the target has no deploy to
+ * revert.
  *
  * Pure: no I/O, no clock; randomness only through the seeded RngFactory it is given (D-4).
  */
@@ -32,6 +37,7 @@ import type {
   ActionCostTable,
   EngineErrorCode,
   Fault,
+  FaultActionReactions,
   FaultKind,
   FaultRegistry,
   RngFactory,
@@ -204,6 +210,53 @@ export interface ActionEffectContext {
   lifecycle: FaultLifecycle
 }
 
+/**
+ * Reaction of each FaultKind to the actions (ADR-012 §5), as data. `onProcessReplacement` is what a
+ * process replacement of the fault's target does to it in `te` (`clear` = ended, `reset` = starts
+ * over as the next generation, `none` = untouched); `revertedByRollback` binds `bad_deploy` to the
+ * deploy batch it emitted (used by `rollback`, T2.4).
+ *
+ * The `cache_cold_start` row says `reset`: a new cooling from `te`. Its target is always a cache
+ * (catalog rule), so that reset is carried out by the cache rule (ended + induced with the
+ * ('action', n, kind) prefix of ADR-012 §6), never by a generation g >= 1 of the old fault.
+ */
+export const faultActionReactions: FaultActionReactions = Object.freeze({
+  service_crash_loop: Object.freeze({ onProcessReplacement: 'clear', revertedByRollback: false }),
+  disk_full: Object.freeze({ onProcessReplacement: 'none', revertedByRollback: false }),
+  connection_pool_exhaustion: Object.freeze({ onProcessReplacement: 'reset', revertedByRollback: false }),
+  bad_deploy: Object.freeze({ onProcessReplacement: 'none', revertedByRollback: true }),
+  slow_dependency: Object.freeze({ onProcessReplacement: 'clear', revertedByRollback: false }),
+  cache_cold_start: Object.freeze({ onProcessReplacement: 'reset', revertedByRollback: false }),
+} as const)
+
+/**
+ * Process replacement (SP) of `target` in `ctx.tick` (ADR-012 §4), for action number `seq`.
+ *
+ * Every fault active in `te` (startTick <= te < endTick) on `target` reacts as its row of
+ * `faultActionReactions` says, in creation order; faults that have not started yet are untouched.
+ * Cache rule: when `target` is a dependency of kind `cache`, every active `cache_cold_start` on it
+ * is ended in `te` and a new one is induced with startTick = te and the catalog defaults.
+ *
+ * Returns true when the cache rule fired (the induced module then owns the `down` tick and the
+ * events of `te`). Used by `restart` and, without unavailability, by `rollback` with a batch (T2.4).
+ */
+export function replaceProcess(target: string, seq: number, ctx: ActionEffectContext): boolean {
+  const { tick, world, lifecycle } = ctx
+  const isCache = world.deps.some((d) => d.name === target && d.kind === 'cache')
+  // activeOn returns a new array: entries appended by reset/induce do not react to this same replacement.
+  for (const entry of lifecycle.activeOn(target, tick)) {
+    if (isCache && entry.fault.kind === 'cache_cold_start') {
+      lifecycle.end(entry, tick)
+      continue
+    }
+    const reaction = faultActionReactions[entry.fault.kind].onProcessReplacement
+    if (reaction === 'clear') lifecycle.end(entry, tick)
+    else if (reaction === 'reset') lifecycle.reset(entry, tick, world)
+  }
+  if (isCache) lifecycle.induce('cache_cold_start', target, tick, seq, world)
+  return isCache
+}
+
 /** Effect of one action in its effect tick (ADR-012 §4); only `down` and `events` are used. */
 export function actionEffect(scheduled: ScheduledAction, ctx: ActionEffectContext): TickEffect {
   const { action } = scheduled
@@ -211,6 +264,8 @@ export function actionEffect(scheduled: ScheduledAction, ctx: ActionEffectContex
     case 'restart': {
       const component = [...ctx.world.services, ...ctx.world.deps].find((c) => c.name === action.target)
       if (component === undefined) throw new Error(`restart: target '${action.target}' is not a component of the world`)
+      // Cache rule: the induced cache_cold_start emits the down tick and the config events (no duplicate).
+      if (replaceProcess(component.name, scheduled.seq, ctx)) return {}
       return {
         down: [...component.instances],
         events: [{ kind: 'config', target: component.name, restart: true }],

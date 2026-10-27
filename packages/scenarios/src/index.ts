@@ -10,3 +10,9 @@
  * ADR-014 §1.1): see eslint.config.js and test/type-only-engine.test.ts.
  */
 export type * from './types.js'
+export { inRepertoire, repertoire } from './repertoire.js'
+
+// T2.10: loader (CN-4), question patterns, engine input.
+export { ScenarioError } from './errors.js'
+export { parseScenario, toSimulationConfig } from './load.js'
+export { matchesPattern } from './patterns.js'
