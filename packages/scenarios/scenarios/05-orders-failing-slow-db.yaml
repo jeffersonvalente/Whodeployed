@@ -1,0 +1,54 @@
+# Cenário 05 da campanha (SPEC §7, linha 5): retry storm após dependência lenta.
+# Ensina: cascata; o culpado não é quem grita. Nível pleno (FASE-2 CN-1).
+# Falha única com target/startTick/params explícitos (CN-2). Tom neutro-realista: o tom narrativo
+# é decisão aberta do Diretor (SPEC §12); nenhum texto aqui depende dela.
+#
+# Como o engano nasce da simulação (SPEC §3.3, §3.4; ADR-004): o postgres fica 1,5 s mais lento.
+# Os chamadores estouram o timeout e repetem (orders-worker: timeout 1000 ms, 2 retries), e quem
+# falha são eles. Os spans do postgres terminam 'ok' (cancelamento não é erro do servidor), então o
+# erro % dele fica em 0 enquanto o orders-worker vai a 100%. O alerta dispara em quem grita.
+# Noise: um deploy real do orders-worker pouco antes, para que "o que mudou?" aponte o lugar errado;
+# o rollback dele não muda nada (ADR-012 §5: rollback em outro componente deixa a falha intacta).
+# Mitigação (ADR-012, consequências): restart do componente lento, não do chamador que grita.
+
+id: 05-orders-failing-slow-db
+title: "Order processing failing"
+level: pleno
+teaches: "In a cascade, the culprit is not the component that screams"
+trap: "orders-worker pages with 100% failed jobs right after its own deploy, while postgres reports 0% errors"
+seed: "flash-sale-05"
+system: default-shop
+
+faults:
+  - kind: slow_dependency
+    target: postgres
+    startTick: 10
+    params: { addedLatencyMs: 1500 }
+
+noise:
+  - kind: deploy
+    target: orders-worker
+    tick: 7
+    note: "orders-worker 2.14.0: bump queue client library"
+
+alert:
+  tick: 16
+  text: "[FIRING:1] JobFailureRateHigh orders-worker: failed jobs > 20% for 1m"
+
+# Impacto acumulado na seed: 0 até o tick 9, 1 por tick a partir do 10 (7 no alerta).
+# O referencePath mitiga no tick 20 com impacto 11 (< 50% de 40, faixa Pleno de SPEC §5).
+# Sem ação, chega a 40 no tick 49 (<= alert.tick + 2 * 40, EN-6b). Calibração final: T2.20.
+impactBudget: 40
+
+referencePath:
+  - { ask: whatChanged, window: 30 }                           # deploy do orders-worker no tick 7
+  - { ask: trace, service: orders-worker, percentile: 95 }     # cada db.update estoura 1000 ms no postgres e é repetido
+  - { ask: dashboard, service: postgres }                      # p95 ~1,5 s, erro 0%
+  - { act: restart, target: postgres }                         # mitigação: substitui o processo lento
+
+rootCause: "A degraded postgres process answers every query about 1.5 s late; its callers time out, retry, and fail on its behalf"
+
+review:
+  redundant: ["dashboard orders-worker", "dashboard queue"]
+  keySignal: "The orders-worker trace: every db.update call to postgres hits the 1000 ms timeout and is retried, while the postgres spans themselves end ok"
+  keySignalAsk: "trace orders-worker"
