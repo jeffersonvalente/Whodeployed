@@ -14,18 +14,19 @@
  *
  *   export const createSession: CreateSession = makeCreateSession({ inRepertoire, toSimulationConfig })
  *
- * Extension points for T2.23 (notebook): `hypothesis`, `discard` and `end` below are the only
- * bodies to fill. Each zero-cost notebook step is appended with `recordFreeStep` (tickCost 0,
- * impactAfter = impact now); `end` calls `finish(final, 'player')`; the hypothesis list is
- * `hypotheses` (exposed in `state`). Nothing else in this file needs to change.
+ * Notebook (T2.23): `hypothesis`, `discard` and `end` validate through ./notebook (pure) and
+ * append a zero-cost step with `recordFreeStep` (tickCost 0, impactAfter = impact now); `end`
+ * calls `finish(final, 'player')`. `state.hypotheses` is derived from the steps (`hypothesesOf`).
  */
 import type { Action, ActionResult, Answer, ComponentName, Question, Simulation } from '@whodeployed/engine'
 import type { InRepertoire, PlayableLevel, ReferenceStep, Scenario, ToSimulationConfig } from '@whodeployed/scenarios'
 import { SessionError } from './errors'
+import type { SessionErrorCode } from './errors'
+import { checkDiscard, checkEnd, checkHypothesis, hypothesesOf, systemComponents } from './notebook'
+import type { NotebookResult } from './notebook'
 import type {
   CreateSession,
   FinalHypothesis,
-  HypothesisState,
   Session,
   SessionDeps,
   SessionLogV1,
@@ -66,6 +67,12 @@ function startTick(scenario: Scenario): number {
   )
 }
 
+/** A notebook rejection becomes a SessionError with the method's code (PR-9, PR-10); `session_ended` stays. */
+function accepted<T>(result: NotebookResult<T>, code: SessionErrorCode): T {
+  if (result.ok) return result.value
+  throw new SessionError(result.code === 'session_ended' ? 'session_ended' : code, result.message)
+}
+
 function describeStep(step: ReferenceStep): string {
   if (step.type === 'ask') return `question '${step.question.kind}'`
   return `action '${step.action.kind}'`
@@ -80,9 +87,14 @@ function openSession(scenario: Scenario, deps: SessionDeps, rules: SessionRules)
   const sim: Simulation = engine.createSimulation(rules.toSimulationConfig(scenario, engine))
   // createSimulation simulates tick 0; advancing alert.tick more lands exactly on alert.tick (PR-5).
   sim.advance(alertTick)
+  // The 9 components a hypothesis may name, from the scenario's system (PR-9).
+  const system = engine.systems[scenario.system]
+  if (system === undefined) {
+    throw new SessionError('invalid_scenario', `scenario ${scenario.id}: unknown system '${scenario.system}'`)
+  }
+  const components = systemComponents(system)
 
   const steps: SessionStep[] = []
-  const hypotheses: HypothesisState[] = []
   let finalHypothesis: FinalHypothesis | null = null
   let ended = false
 
@@ -136,12 +148,12 @@ function openSession(scenario: Scenario, deps: SessionDeps, rules: SessionRules)
     steps.push(step)
   }
 
-  /** Notebook steps cost 0 ticks (PR-8). Extension point for T2.23. */
+  /** Notebook steps cost 0 ticks (PR-8). */
   function recordFreeStep(fields: StepFields<SessionStep>): void {
     record(now(), 0, fields)
   }
 
-  /** Ends the session with an `end` step. `reason: 'player'` is wired by T2.23 (`end`). */
+  /** Ends the session with an `end` step (`player` from `end`, `tickLimit` at tick 360). */
   function finish(final: FinalHypothesis, reason: 'player' | 'tickLimit'): void {
     recordFreeStep({ type: 'end', final, reason })
     finalHypothesis = final
@@ -151,10 +163,6 @@ function openSession(scenario: Scenario, deps: SessionDeps, rules: SessionRules)
   /** The tick 360 ends the session by itself, with no hypothesis (PR-8, ADR-015 §5). */
   function endAtTickLimit(): void {
     if (now() >= SESSION_TICK_LIMIT) finish({ kind: 'unknown' }, 'tickLimit')
-  }
-
-  function notImplemented(method: string): never {
-    throw new SessionError('not_implemented', `${method} is not available yet`)
   }
 
   const session: Session = {
@@ -170,7 +178,7 @@ function openSession(scenario: Scenario, deps: SessionDeps, rules: SessionRules)
         severe: impact >= scenario.impactBudget,
         ended,
         steps: Object.freeze([...steps]),
-        hypotheses: Object.freeze(hypotheses.map((h) => Object.freeze({ ...h }))),
+        hypotheses: Object.freeze(hypothesesOf(steps).map((h) => Object.freeze(h))),
       })
     },
 
@@ -207,30 +215,22 @@ function openSession(scenario: Scenario, deps: SessionDeps, rules: SessionRules)
       endAtTickLimit()
     },
 
-    // T2.23: validate (component among the 9, non-empty text), recordFreeStep({ type: 'hypothesis', ... }),
-    // push to `hypotheses`, return the step's seq.
+    // Notebook steps (PR-9, PR-10): validated by ./notebook, recorded with tickCost 0 (PR-8).
     hypothesis(component: ComponentName, text: string): number {
       assertOpen()
-      void component
-      void text
-      return notImplemented('hypothesis')
+      recordFreeStep(accepted(checkHypothesis(steps, components, component, text), 'invalid_hypothesis'))
+      return steps.length
     },
 
-    // T2.23: validate (active hypothesis, >= 1 previous `ask` seq), recordFreeStep({ type: 'discard', ... }),
-    // set `discardedBy` on the hypothesis.
     discard(hypothesisSeq: number, citedSeqs: readonly number[], text?: string): void {
       assertOpen()
-      void hypothesisSeq
-      void citedSeqs
-      void text
-      notImplemented('discard')
+      recordFreeStep(accepted(checkDiscard(steps, hypothesisSeq, citedSeqs, text), 'invalid_discard'))
     },
 
-    // T2.23: validate `final`, then finish(final, 'player').
     end(final: FinalHypothesis): void {
       assertOpen()
-      void final
-      notImplemented('end')
+      const payload = accepted(checkEnd(steps, components, final), 'invalid_final')
+      finish(payload.final, 'player')
     },
 
     log(): SessionLogV1 {
