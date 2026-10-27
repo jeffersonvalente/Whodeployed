@@ -1,0 +1,29 @@
+# Loader test fixture (T2.10): missing-key-signal-ask. Same as valid.yaml with one change.
+id: 90-loader-fixture
+title: "Fixture: catalog pages failing"
+level: junior
+teaches: "Fixture lesson for the loader tests"
+trap: "Fixture trap: gateway errors point away from catalog"
+seed: "loader-fixture-01"
+system: default-shop
+faults:
+  - kind: service_crash_loop
+    target: catalog
+    startTick: 10
+    params: { uptimeTicks: 1, restartTicks: 3 }
+noise:
+  - kind: deploy
+    target: auth
+    tick: 8
+    note: "fixture deploy"
+alert:
+  tick: 14
+  text: "[FIRING] FixtureHighErrorRate gateway: 5xx > 5% for 2m"
+impactBudget: 60
+referencePath:
+  - { ask: logs, service: catalog, window: 30 }
+  - { act: restart, target: catalog }
+rootCause: "Fixture root cause."
+review:
+  redundant: ["dashboard auth", "whatChanged"]
+  keySignal: "fixture key signal"

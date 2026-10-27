@@ -11,3 +11,8 @@
  */
 export type * from './types.js'
 export { inRepertoire, repertoire } from './repertoire.js'
+
+// T2.10: loader (CN-4), question patterns, engine input.
+export { ScenarioError } from './errors.js'
+export { parseScenario, toSimulationConfig } from './load.js'
+export { matchesPattern } from './patterns.js'
