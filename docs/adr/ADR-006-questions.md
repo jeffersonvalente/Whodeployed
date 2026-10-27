@@ -88,3 +88,19 @@ O teste de Q-6 da T1.10 usa views montadas à mão. A verificação "duração d
 ### Teste de desempate (#21)
 
 O teste de desempate de `trace` precisa de uma entrada em que o empate no rank escolhido decida entre o primeiro e um span gerado depois (ex.: em ordem de geração `x=20, y=20, a=10, w=30`, p50 ⇒ foco `x`). Corrigido pela T1.16, que já edita `trace.ts` e seu teste.
+
+## Emenda 2 — 2026-10-26 (issue #24 itens 6 e 7; PRD FASE-2 I24-5, I24-6)
+
+Registra os códigos que `src/questions/validate.ts` já devolve em `main` (`4fe9dce`) e que o protótipo mostra ao jogador. Nenhuma mudança de código.
+
+| Entrada | `code` | `field` |
+| --- | --- | --- |
+| `by` fora de {`instance`, `lastWeek`} | `invalid_question` (não existe `invalid_by`) | `question.by` |
+| `filter: null` | `invalid_filter` (`null` ≠ ausente, como na ADR-004 Emenda 1) | `question.filter` |
+| `filter: undefined` | sem erro: equivale a sem filtro | — |
+| `filter` com valor não string | `invalid_filter` | `question.filter.<chave>` |
+| chave fora do contrato do `kind` (ex.: `level`, `window` em `dashboard`) | `invalid_question` | `question.<chave>` |
+
+A última linha também fecha Q-1 contra qualquer parâmetro de nível na pergunta.
+
+**Igualdade de `Answer.question` (I24-6, decidido no PRD FASE-2):** `Answer.question` é a cópia validada e congelada, com as chaves na ordem do contrato. Uma pergunta com `filter: undefined` explícito volta sem a chave `filter`. "Igualdade profunda" de Q-2 = igualdade do JSON canônico, com `undefined` ≡ ausente (ADR-016 §2). O replay do protótipo (PR-14) compara assim. Nenhuma mudança no motor.
