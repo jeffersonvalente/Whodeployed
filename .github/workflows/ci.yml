@@ -35,6 +35,8 @@ jobs:
           fi
       - name: Web static checks (PR-2, PR-3)
         run: bash apps/web/scripts/check-static.sh
+      - name: Scenario strings not in code (CN-8)
+        run: node packages/scenarios/scripts/check-not-in-code.mjs
       # $CLI = node packages/engine/dist/cli/main.js, built by the `build` step right after install (ADR-007).
       - name: Engine CLI checks (D-1, D-2, CLI-3, CLI-4, CLI-5, P-4)
         run: bash packages/engine/scripts/ci-engine.sh
