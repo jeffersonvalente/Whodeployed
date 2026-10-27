@@ -24,6 +24,7 @@ export default defineConfig({
         'src/sim/**': QC1,
         'src/faults/**': QC1,
         'src/sim/actions.ts': QC1,
+        'src/sim/impact.ts': QC1,
       },
     },
   },

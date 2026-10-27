@@ -26,7 +26,7 @@ Valores iniciais: `SLOW_MS = 1000`, `THETA = 0,05`.
 
 - `impactOfTick(view, tick): ImpactTick` — `{ tick, expected, bad, impacted }`; `tick` fora de `[0, view.now]` lança `EngineError` `invalid_ticks`.
 - `accumulatedImpact(view, upTo): number` — Σ de `impacted` em `[0, upTo]`.
-- Módulo `src/sim/impact.ts` (coberto pelo threshold de `src/sim/**`, EN-8). Só lê a `TelemetryView` (`world`, `spansOf`). Não importa nada de cenário, não tem nível, não usa `Math.random` nem relógio (D-4).
+- Módulo `src/sim/impact.ts`. EN-8 é cumprido pelo threshold por arquivo `'src/sim/impact.ts': QC1` em `packages/engine/vitest.config.ts` (T2.6); o glob `'src/sim/**'` é agregado e sozinho não garante o módulo. Só lê a `TelemetryView` (`world`, `spansOf`). Não importa nada de cenário, não tem nível, não usa `Math.random` nem relógio (D-4).
 - Desempenho: `accumulatedImpact` sobre 360 ticks percorre os spans de 2 componentes por tick; quem chama a cada passo (o protótipo) pode memoizar por tick, porque um tick passado nunca muda (ADR-010).
 
 ### 3. Calibração (tarefa T2.6)
@@ -58,3 +58,30 @@ Medição do Arquiteto com o par inicial (10 seeds `imp-0..9`, defaults, ticks 1
 - **Impacto ponderado (soma de frações em vez de 0/1 por tick):** o orçamento do SPEC §7 é em ticks; contar ticks deixa a regra e o número da tela legíveis para o júnior.
 - **Limiar relativo ao `lastWeek`:** mais robusto, mas dobra o custo de simulação a cada passo no navegador e acopla o impacto a uma segunda execução; os valores absolutos já dão 0% no baseline.
 - **Impacto declarado no cenário (YAML diz quando dói):** fere EN-6 e SPEC §3.3.
+
+## Emenda 1 — calibração (2026-10-27, tarefa T2.6)
+
+**Par escolhido: `SLOW_MS = 1000`, `THETA = 0,05`** (o par inicial, primeiro da grade de §3). Constantes em `packages/engine/src/sim/impact.ts`; prova em `packages/engine/test/sim/impact.test.ts`.
+
+Medição: `default-shop` (ingress `gateway` 12 + `orders-worker` 2 = 14 requests por tick), seeds de `signatureSeeds('imp')` (`test/support/signature.ts`: `imp-0..imp-11`, 12 seeds ≥ 10 do R1; `ENGINE_QA_SEEDS` troca a lista), defaults da ADR-004 (`startTick` 10 em todos os kinds). Noise de EN-6(c): 4 eventos em componentes diferentes (`deploy catalog` t20, `config auth` t40, `deploy cart` instância `cart-1` t90, `config redis` t200).
+
+| Critério (§3) | Medido com (1000; 0,05) | Cumpre |
+| --- | --- | --- |
+| 1. EN-6(a): baseline, 360 ticks, ≤ 1% por seed | 0/360 em todas as 12 seeds; `expected = 14` em todo tick | sim |
+| 2. EN-6(c): baseline + noise = mesma série | série `ImpactTick[]` idêntica tick a tick (`toStrictEqual`) nas 12 seeds | sim |
+| 3. Sanidade por kind, ticks impactados em `10..59` (50 ticks), mín–máx entre seeds | `service_crash_loop` 50–50; `disk_full` 45–47; `connection_pool_exhaustion` 28–38; `bad_deploy` 49–50; `slow_dependency` 50–50 | sim (≥ 1 em toda seed) |
+| (registro) `cache_cold_start` | 0–0 | fora do critério 3, como em "Consequências" |
+
+Os números batem com a medição do Arquiteto em §3 (10 seeds `imp-0..9`); as seeds `imp-10` e `imp-11` ficam nas mesmas faixas.
+
+Os outros pares da grade, medidos com as mesmas seeds para registro (não escolhidos, porque o primeiro par já cumpre):
+
+| Par | Baseline | `crash_loop` | `disk_full` | `pool` | `bad_deploy` | `slow_dep` | `cold_start` |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| (1000; 0,10) | 0/360 | 48–50 | 35–43 | 10–20 | 49–50 | 50 | 0 |
+| (2000; 0,05) | 0/360 | 50 | 45–47 | 6–18 | 49–50 | 50 | 0 |
+| (2000; 0,10) | 0/360 | 48–50 | 35–43 | 0–3 | 49–50 | 50 | 0 |
+
+Nos quatro pares, noise não muda nenhum tick. O par (2000; 0,10) reprova o critério 3 (`connection_pool_exhaustion` com 0 ticks em 3 seeds). Subir `THETA` ou `SLOW_MS` só tira sensibilidade das falhas parciais (pool, disco) sem ganho no baseline, que já é 0.
+
+Leitura para SPEC §3.4: em `disk_full` e `slow_dependency` o alvo é `postgres`, que não tem ingress; o impacto aparece nas raízes de `gateway`/`orders-worker`, longe da causa. A medida é do lado do usuário, não do serviço alvo.
