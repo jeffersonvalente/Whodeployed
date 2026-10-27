@@ -37,6 +37,13 @@ jobs:
         run: bash apps/web/scripts/check-static.sh
       - name: Scenario strings not in code (CN-8)
         run: node packages/scenarios/scripts/check-not-in-code.mjs
+      # PR-17 (ADR-015 §7): replay of a 360-tick session with 40 questions in <= 5 s. The scenario is
+      # the scenarios loader fixture until T2.32 brings the real logs and YAML.
+      - name: Web replay performance (PR-17)
+        run: >-
+          timeout 5 pnpm --filter @whodeployed/web replay --
+          "$GITHUB_WORKSPACE/apps/web/test/fixtures/logs/perf-360.json"
+          "$GITHUB_WORKSPACE/packages/scenarios/test/fixtures/valid.yaml"
       # $CLI = node packages/engine/dist/cli/main.js, built by the `build` step right after install (ADR-007).
       - name: Engine CLI checks (D-1, D-2, CLI-3, CLI-4, CLI-5, P-4)
         run: bash packages/engine/scripts/ci-engine.sh
