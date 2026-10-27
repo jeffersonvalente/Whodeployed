@@ -3,7 +3,11 @@
  * Q-10, DET) and the answer fixtures consumed by the UI (fixtures/answers/<kind>.json).
  *
  * createSimulation is wrapped (not replaced) so the tests can count how many lastWeek runs the
- * dispatcher creates: every call goes to the real implementation.
+ * dispatcher creates: every call goes to the real implementation. Since T2.1 the dispatcher
+ * builds the lastWeek run through `env.createLastWeek` (ADR-002 Emenda 2 §2.4), which the
+ * orchestrator binds to its own createSimulation; ask() is therefore wrapped too, handing the
+ * real dispatcher one stable environment per original environment (memoization is keyed by it)
+ * whose createLastWeek is the wrapped createSimulation.
  *
  * Regenerate the fixtures (only when the engine output changes on purpose):
  *   UPDATE_FIXTURES=1 corepack pnpm --filter ./packages/engine exec vitest run test/questions/ask.test.ts
@@ -14,7 +18,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { EngineError } from '../../src/errors.js'
-import { lastWeekConfig, lastWeekSeed, tickCostTable } from '../../src/questions/ask.js'
+import { lastWeekConfig, lastWeekSeed, tickCostTable, type AskEnvironment } from '../../src/questions/ask.js'
 import { toNdjson } from '../../src/sim/serialize.js'
 import { createSimulation, simulate } from '../../src/sim/simulation.js'
 import type {
@@ -33,8 +37,24 @@ vi.mock('../../src/sim/simulation.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/sim/simulation.js')>()
   return { ...actual, createSimulation: vi.fn(actual.createSimulation) }
 })
+// Filled below with the wrapped createSimulation; read lazily, when a lastWeek run is created.
+const spied = vi.hoisted(() => ({ createSimulation: undefined as undefined | ((config: SimulationConfig) => Simulation) }))
+vi.mock('../../src/questions/ask.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/questions/ask.js')>()
+  const wrapped = new WeakMap<AskEnvironment, AskEnvironment>()
+  const ask: typeof actual.ask = (question, env) => {
+    let spiedEnv = wrapped.get(env)
+    if (spiedEnv === undefined) {
+      spiedEnv = Object.freeze({ ...env, createLastWeek: (config: SimulationConfig) => spied.createSimulation!(config) })
+      wrapped.set(env, spiedEnv)
+    }
+    return actual.ask(question, spiedEnv)
+  }
+  return { ...actual, ask }
+})
 
 const createSpy = vi.mocked(createSimulation)
+spied.createSimulation = createSpy
 const lastWeekRuns = (): SimulationConfig[] =>
   createSpy.mock.calls.map(([cfg]) => cfg).filter((cfg) => cfg.seed.endsWith(':lastWeek'))
 

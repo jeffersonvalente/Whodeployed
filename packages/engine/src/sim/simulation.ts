@@ -165,7 +165,8 @@ export function createSimulationWith(config: SimulationConfig, options: Simulati
     all: () => store.all(),
   }
   // One environment per Simulation, passed on every ask() call (T1.16 memoizes lastWeek on it).
-  const env: AskEnvironment = Object.freeze({ view, config: frozenConfig })
+  // createLastWeek is injected so questions/ask.ts does not import this module (ADR-002 Emenda 2 §2.4).
+  const env: AskEnvironment = Object.freeze({ view, config: frozenConfig, createLastWeek: createSimulation })
 
   const step = (tick: number): TelemetryRecord[] => {
     const tickWorld = snapshotAt(tick)

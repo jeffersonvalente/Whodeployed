@@ -4,13 +4,15 @@
  *         the CLI imports only the library, node:util and node:process (D-5, ADR-007);
  *   D-4   no non-deterministic source anywhere in src/;
  *   S-5   no scenario ids or titles in src/;
- *   Q-1   no player-level concept in src/.
+ *   Q-1   no player-level concept in src/;
+ *   I24-4 the graph of relative value imports of src/ (import type excluded) has no cycle
+ *         (ADR-002 Emenda 2 §2.4).
  * It also proves the ESLint config rejects Math.random in src/ with a sample file (D-4), and
  * that the library tsconfig has no @types/node (SPEC §3.6, ADR-008) by compiling samples.
  */
 import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, relative, sep } from 'node:path'
+import { dirname, join, normalize, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { ESLint } from 'eslint'
 import ts from 'typescript'
@@ -104,6 +106,110 @@ describe('library boundary (CT-3)', () => {
     expect(specifiers(sample).sort()).toEqual(
       ['../c.js', './types.js', 'http', 'node:fs', 'node:net', 'side-effect'].sort(),
     )
+  })
+})
+
+/**
+ * Relative specifiers that load a module at runtime, read from the TypeScript AST: static
+ * imports and re-exports except `import type` / `export type` (erased under
+ * verbatimModuleSyntax), plus side-effect imports and `import()`. `import { a, type B }` still
+ * loads the module, so it counts.
+ */
+function valueSpecifiers(text: string): string[] {
+  const file = ts.createSourceFile('sample.ts', text, ts.ScriptTarget.ES2022, false, ts.ScriptKind.TS)
+  const found: string[] = []
+  const visit = (node: ts.Node): void => {
+    if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier)) {
+      if (node.importClause?.isTypeOnly !== true) found.push(node.moduleSpecifier.text)
+    } else if (ts.isExportDeclaration(node) && node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier)) {
+      if (!node.isTypeOnly) found.push(node.moduleSpecifier.text)
+    } else if (
+      ts.isCallExpression(node) &&
+      node.expression.kind === ts.SyntaxKind.ImportKeyword &&
+      node.arguments[0] !== undefined &&
+      ts.isStringLiteralLike(node.arguments[0])
+    ) {
+      found.push(node.arguments[0].text)
+    }
+    ts.forEachChild(node, visit)
+  }
+  visit(file)
+  return found.filter(isRelative)
+}
+
+/** Package-relative path ('src/a/b.ts') of a relative specifier ('../b.js') seen from `from`. */
+function resolveSpecifier(from: string, spec: string): string {
+  return normalize(join(dirname(from), spec)).split(sep).join('/').replace(/\.js$/, '.ts')
+}
+
+/** Every import cycle in `files` (relative value imports only), each as a closed path. */
+function importCycles(files: readonly { path: string; text: string }[]): string[][] {
+  const known = new Set(files.map((f) => f.path))
+  const edges = new Map(
+    files.map(({ path, text }) => [
+      path,
+      [...new Set(valueSpecifiers(text).map((spec) => resolveSpecifier(path, spec)))].filter((to) => known.has(to)).sort(),
+    ]),
+  )
+  const cycles: string[][] = []
+  const state = new Map<string, 'open' | 'done'>()
+  const stack: string[] = []
+  const visit = (node: string): void => {
+    state.set(node, 'open')
+    stack.push(node)
+    for (const next of edges.get(node) ?? []) {
+      const s = state.get(next)
+      if (s === 'open') cycles.push([...stack.slice(stack.indexOf(next)), next])
+      else if (s === undefined) visit(next)
+    }
+    stack.pop()
+    state.set(node, 'done')
+  }
+  for (const path of [...known].sort()) if (!state.has(path)) visit(path)
+  return cycles
+}
+
+describe('import graph (I24-4, ADR-002 Emenda 2 §2.4)', () => {
+  it('src/ has no cycle of relative value imports', () => {
+    expect(importCycles(sources)).toEqual([])
+  })
+
+  it('questions/ask.ts does not import sim/simulation.ts', () => {
+    const ask = sources.find((s) => s.path === 'src/questions/ask.ts')
+    expect(ask).toBeDefined()
+    expect(valueSpecifiers(ask!.text).map((spec) => resolveSpecifier(ask!.path, spec))).not.toContain(
+      'src/sim/simulation.ts',
+    )
+  })
+
+  it('detects a cycle in sample files, through .js specifiers and a mixed import', () => {
+    const sample = [
+      { path: 'src/sim/a.ts', text: "import { b } from '../questions/b.js'\nexport const a = b\n" },
+      { path: 'src/questions/b.ts', text: "import { c, type C } from './c.js'\nexport const b: C = c\n" },
+      { path: 'src/questions/c.ts', text: "export type C = number\nexport { a as c } from '../sim/a.js'\n" },
+    ]
+    expect(importCycles(sample)).toEqual([['src/questions/b.ts', 'src/questions/c.ts', 'src/sim/a.ts', 'src/questions/b.ts']])
+  })
+
+  it('would catch the phase-1 cycle: ask.ts importing sim/simulation.ts again', () => {
+    const reverted = sources.map((f) =>
+      f.path === 'src/questions/ask.ts' ? { ...f, text: `import { createSimulation } from '../sim/simulation.js'\n${f.text}` } : f,
+    )
+    const cycles = importCycles(reverted)
+    expect(cycles).toHaveLength(1)
+    expect(cycles[0]).toEqual(expect.arrayContaining(['src/questions/ask.ts', 'src/sim/simulation.ts']))
+  })
+
+  it('ignores type-only imports and exports when looking for cycles', () => {
+    const sample = [
+      { path: 'src/a.ts', text: "import type { B } from './b.js'\nexport const a = 1\nexport type A = B\n" },
+      { path: 'src/b.ts', text: "export type { A } from './a.js'\nimport { a } from './a.js'\nexport type B = typeof a\n" },
+      { path: 'src/c.ts', text: "import type { A } from './a.js'\nimport './b.js'\nexport type C = A\n" },
+    ]
+    expect(importCycles(sample)).toEqual([])
+    // The same pair with a value import in a.ts is a cycle.
+    const asValue = sample.map((f) => (f.path === 'src/a.ts' ? { ...f, text: f.text.replace('import type', 'import') } : f))
+    expect(importCycles(asValue)).toEqual([['src/a.ts', 'src/b.ts', 'src/a.ts']])
   })
 })
 
