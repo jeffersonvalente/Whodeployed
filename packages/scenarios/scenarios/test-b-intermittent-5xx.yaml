@@ -1,0 +1,48 @@
+# Test incident TB (FASE-2 CN-3, CN-9; ADR-011). Post-test with 1 tester (TH-5).
+# Never part of the campaign; opened only through the prototype's test mode (PR-4).
+# Equivalent to test-a-edge-5xx.yaml: same level, budget, path shape, noise count,
+# alert role and size of S (CN-9). Keep both files in step when changing either one.
+
+id: test-b-intermittent-5xx
+title: "Intermittent 5xx for shoppers"
+level: pleno
+teaches: "Errors that started before a change cannot be caused by it."
+trap: "The newest change before the page is a redis config change, and redis sits on the path of most requests."
+seed: "rainy-weekend-01"
+system: default-shop
+
+faults:
+  - kind: bad_deploy
+    target: catalog
+    startTick: 18
+    params: { affectedInstances: 2, errorRatio: 0.9 }
+
+noise:
+  # The decoy: the newest change in the whatChanged window, on a shared dependency.
+  - kind: config
+    target: redis
+    tick: 22
+    note: "maxmemory-policy set to allkeys-lru"
+  - kind: deploy
+    target: orders-worker
+    tick: 6
+    note: "release 2.3.1"
+
+alert:
+  tick: 24
+  text: "[ALERT] ErrorBudgetBurn gateway: 5xx rate above 5% over the last 1m"
+
+# Impacted ticks (ADR-013). The reference path mitigates at 10 of 30 (< 50%, CN-3).
+impactBudget: 30
+
+referencePath:
+  - { ask: whatChanged, window: 30 }
+  - { ask: compare, service: catalog, metric: errorPct, by: instance }
+  - { act: rollback, target: catalog }
+
+rootCause: "A release rolled out to two of the three catalog instances fails most of the requests those instances serve."
+
+review:
+  redundant: ["dashboard gateway"]
+  keySignal: "Split by instance, catalog errors come from the two instances deployed at tick 18; the third one is clean."
+  keySignalAsk: "compare catalog"

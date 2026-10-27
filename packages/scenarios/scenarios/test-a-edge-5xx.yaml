@@ -1,0 +1,48 @@
+# Test incident TA (FASE-2 CN-3, CN-9; ADR-011). Pre-test with 1 tester (TH-5).
+# Never part of the campaign; opened only through the prototype's test mode (PR-4).
+# Equivalent to test-b-intermittent-5xx.yaml: same level, budget, path shape, noise count,
+# alert role and size of S (CN-9). Keep both files in step when changing either one.
+
+id: test-a-edge-5xx
+title: "5xx spike at the edge"
+level: pleno
+teaches: "The newest change on the list is not automatically the cause."
+trap: "The newest change before the page is a gateway release, and gateway is the service that is paging."
+seed: "quarter-close-01"
+system: default-shop
+
+faults:
+  - kind: bad_deploy
+    target: auth
+    startTick: 20
+    params: { affectedInstances: 2, errorRatio: 0.9 }
+
+noise:
+  # The decoy: the newest change in the whatChanged window, on the paging service.
+  - kind: deploy
+    target: gateway
+    tick: 24
+    note: "release 4.12.0"
+  - kind: config
+    target: queue
+    tick: 9
+    note: "consumer prefetch 10 -> 20"
+
+alert:
+  tick: 26
+  text: "[FIRING] Gateway5xxRatioHigh service=gateway: 5xx ratio > 10% for 1m"
+
+# Impacted ticks (ADR-013). The reference path mitigates at 10 of 30 (< 50%, CN-3).
+impactBudget: 30
+
+referencePath:
+  - { ask: whatChanged, window: 30 }
+  - { ask: compare, service: auth, metric: errorPct, by: instance }
+  - { act: rollback, target: auth }
+
+rootCause: "A release rolled out to two of the three auth instances throws an unhandled exception on most requests."
+
+review:
+  redundant: ["dashboard gateway"]
+  keySignal: "Split by instance, auth errors come from the two instances deployed at tick 20; the third one is clean."
+  keySignalAsk: "compare auth"
