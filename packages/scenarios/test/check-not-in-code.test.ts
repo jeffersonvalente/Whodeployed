@@ -171,11 +171,36 @@ rootCause: |
     expect(run(['--scenarios', dir, '--tree', tree()]).status).toBe(0)
   })
 
+  // QA counterexamples on PR #93 (CN-8, SPEC §3.7): valid block forms the first extractor read
+  // differently from a YAML parser. The value planted is the one the parser gives.
+  it.each([
+    ['(a) ">" folded block with more-indented lines', 'teaches: >\n  para one\n    indented\n  end', 'para one\n  indented\nend'],
+    ['(a) ">" folded block with a list', 'rootCause: >\n  Pool leak:\n\n    - retry path\n    - no release', 'Pool leak:\n\n  - retry path\n  - no release'],
+    ['(b) explicit indentation indicator "|1"', 'rootCause: |1\n   line one\n   line two', '  line one\n  line two'],
+    ['(c) comment line at another indentation under "|"', 'teaches: |\n    deep line\n # note', 'deep line'],
+  ])('exits 1 on %s when the parsed value is planted', (_case, block, parsed) => {
+    const key = block.slice(0, block.indexOf(':'))
+    const yaml = sampleYaml.replace(new RegExp(`^${key}:.*$`, 'm'), block)
+    const r = run(['--scenarios', scenariosDir(yaml), '--tree', tree(`export const s = ${JSON.stringify(parsed)}\n`)])
+    expect(r.status).toBe(1)
+    expect(r.stderr).toContain(`scenario ${key} `)
+  })
+
+  it('matches each line of a multi-line value on its own (grep -F pattern list)', () => {
+    const yaml = sampleYaml.replace(/^rootCause:.*$/m, 'rootCause: |\n  first sample line\n  second sample line')
+    const r = run(['--scenarios', scenariosDir(yaml), '--tree', tree("const s = ['second sample line']\n")])
+    expect(r.status).toBe(1)
+    expect(r.stderr).toContain('scenario rootCause')
+  })
+
   it.each([
     ['a missing field', sampleYaml.replace(/^teaches:.*\n/m, ''), 'field "teaches": missing'],
     ['a missing alert.text', sampleYaml.replace(/^ {2}text:.*\n/m, ''), 'field "alert.text": missing'],
-    ['an alias', sampleYaml.replace(/^title:.*$/m, 'title: *t'), 'field "title": unsupported YAML form'],
-    ['a multi-line quoted value', sampleYaml.replace(/^rootCause:.*$/m, 'rootCause: "first line\n  second line"'), 'field "rootCause": multi-line'],
+    ['a non-string field', sampleYaml.replace(/^title:.*$/m, 'title: 42'), 'field "title": must be a string'],
+    ['an empty field', sampleYaml.replace(/^title:.*$/m, 'title: ""'), 'field "title": empty'],
+    ['an unresolved alias', sampleYaml.replace(/^title:.*$/m, 'title: *t'), 'invalid YAML'],
+    ['invalid YAML', sampleYaml.replace(/^title:.*$/m, 'title: "unclosed'), 'invalid YAML'],
+    ['a duplicate key', `${sampleYaml}title: "again"\n`, 'invalid YAML'],
   ])('exits 2 naming file and field on %s (fail closed)', (_case, yaml, message) => {
     const r = run(['--scenarios', scenariosDir(yaml), '--tree', tree()])
     expect(r.status).toBe(2)
