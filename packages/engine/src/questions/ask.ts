@@ -16,9 +16,10 @@
  * of the running simulation (Q-3).
  *
  * Calling convention (internal, not part of the public API): the orchestrator creates one
- * AskEnvironment per Simulation and passes the same object on every call.
+ * AskEnvironment per Simulation and passes the same object on every call. The environment also
+ * carries `createLastWeek` (the orchestrator passes createSimulation), so this module does not
+ * import the orchestrator and the import graph of src/ has no cycle (ADR-002 Emenda 2 §2.4).
  */
-import { createSimulation } from '../sim/simulation.js'
 import type {
   Answer,
   Question,
@@ -39,6 +40,8 @@ export interface AskEnvironment {
   readonly view: TelemetryView
   /** Config of the running simulation; the lastWeek run reuses its system with a derived seed. */
   readonly config: SimulationConfig
+  /** Builds the lastWeek run; the orchestrator passes createSimulation (ADR-002 Emenda 2 §2.4). */
+  readonly createLastWeek: (config: SimulationConfig) => Simulation
 }
 
 /** tickCost per kind (ADR-006, Q-2). */
@@ -65,7 +68,7 @@ const lastWeekRuns = new WeakMap<AskEnvironment, Simulation>()
 function lastWeekOf(env: AskEnvironment): TelemetryView {
   let run = lastWeekRuns.get(env)
   if (run === undefined) {
-    run = createSimulation(lastWeekConfig(env.config))
+    run = env.createLastWeek(lastWeekConfig(env.config))
     lastWeekRuns.set(env, run)
   }
   const now = env.view.now
