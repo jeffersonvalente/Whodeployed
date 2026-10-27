@@ -186,7 +186,7 @@ export function createSimulationWith(config: SimulationConfig, options: Simulati
     const actionEffects: TickEffect[] = []
     while (scheduled.length > 0 && (scheduled[0] as ScheduledAction).effectTick === tick) {
       const next = scheduled.shift() as ScheduledAction
-      actionEffects.push(actionEffect(next, { tick, world: tickWorld, lifecycle }))
+      actionEffects.push(actionEffect(next, { tick, world: tickWorld, lifecycle, view }))
     }
     const hooks = hooksActiveAt(lifecycle.active, tick)
     const effect: TickEffect = hooks.onTick?.({ tick, world: tickWorld }) ?? {}

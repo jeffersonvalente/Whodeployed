@@ -24,9 +24,15 @@
  * note is emitted in `te`. When X is a cache, the cache rule induces a `cache_cold_start` on X from
  * `te`, and the `down` tick and the `config` events are that module's own (ADR-004): the restart
  * then emits no event nor `down` of its own, so nothing is duplicated.
- * `rollback` (deploy history, batches) is task T2.4: until then a rollback is validated, costs its
- * ticks and changes nothing, which is also its documented effect when the target has no deploy to
- * revert.
+ * `rollback X` (ADR-012 §4, T2.4): the deploy history is read from the simulation's own
+ * TelemetryView (deploy events of X with tick <= te - 1, i.e. <= world.tick when act() was called,
+ * from faults or noise alike, as whatChanged sees them). A batch is every deploy event of X with
+ * the same tick; the rollback takes the most recent batch not yet reverted. The deploy events the
+ * rollbacks emit themselves never count towards a batch. Without a batch nothing happens (no event,
+ * no `down`, no process replacement); with one, the batch is marked reverted, every active fault
+ * whose row has `revertedByRollback` (bad_deploy), on X, with startTick = the batch tick, is ended
+ * in `te`, X gets a process replacement without unavailability (rolling: no `down`; the cache rule
+ * still applies) and one `deploy` event without instance nor note is emitted in `te`.
  *
  * Pure: no I/O, no clock; randomness only through the seeded RngFactory it is given (D-4).
  */
@@ -42,6 +48,7 @@ import type {
   FaultRegistry,
   RngFactory,
   SupportedActionKind,
+  TelemetryView,
   TickEffect,
   World,
 } from '../types.js'
@@ -208,7 +215,12 @@ export interface ActionEffectContext {
   tick: number
   world: World
   lifecycle: FaultLifecycle
+  /** The simulation's own telemetry, simulated up to `tick - 1`: the deploy history of `rollback`. */
+  view: TelemetryView
 }
+
+/** What a process replacement needs: the reaction table works on the life cycle only. */
+export type ProcessReplacementContext = Pick<ActionEffectContext, 'tick' | 'world' | 'lifecycle'>
 
 /**
  * Reaction of each FaultKind to the actions (ADR-012 §5), as data. `onProcessReplacement` is what a
@@ -240,7 +252,7 @@ export const faultActionReactions: FaultActionReactions = Object.freeze({
  * Returns true when the cache rule fired (the induced module then owns the `down` tick and the
  * events of `te`). Used by `restart` and, without unavailability, by `rollback` with a batch (T2.4).
  */
-export function replaceProcess(target: string, seq: number, ctx: ActionEffectContext): boolean {
+export function replaceProcess(target: string, seq: number, ctx: ProcessReplacementContext): boolean {
   const { tick, world, lifecycle } = ctx
   const isCache = world.deps.some((d) => d.name === target && d.kind === 'cache')
   // activeOn returns a new array: entries appended by reset/induce do not react to this same replacement.
@@ -272,7 +284,82 @@ export function actionEffect(scheduled: ScheduledAction, ctx: ActionEffectContex
       }
     }
     case 'rollback':
-      // Deploy history and batches: T2.4. Without a batch to revert a rollback changes nothing (ADR-012 §4).
-      return {}
+      return rollback(action.target, scheduled.seq, ctx)
   }
+}
+
+// ---------------------------------------------------------------------------
+// rollback (ADR-012 §4, §6)
+// ---------------------------------------------------------------------------
+
+/**
+ * Internal state of the rollbacks of one simulation (ADR-012 §6: "um conjunto interno de lotes
+ * revertidos e de ticks de eventos emitidos por rollback"). Nothing comes from outside the engine.
+ */
+interface RollbackHistory {
+  /** Ticks of the reverted batches, per target. */
+  readonly reverted: Map<string, Set<number>>
+  /** Number of deploy events emitted by rollbacks, per target and tick. */
+  readonly emitted: Map<string, Map<number, number>>
+}
+
+/**
+ * One history per simulation, keyed by its TelemetryView (one view per Simulation, stable for its
+ * whole life). A WeakMap keeps the history private to this module and freed with the simulation.
+ */
+const rollbackHistories = new WeakMap<TelemetryView, RollbackHistory>()
+
+function historyOf(view: TelemetryView): RollbackHistory {
+  let history = rollbackHistories.get(view)
+  if (history === undefined) {
+    history = { reverted: new Map(), emitted: new Map() }
+    rollbackHistories.set(view, history)
+  }
+  return history
+}
+
+/**
+ * Tick of the most recent batch of deploys of `target` in [0, upTo] not yet reverted, or undefined.
+ * A tick holds a batch when it has more deploy events of `target` than the rollbacks emitted there:
+ * a noise deploy in the same tick as a rollback's own deploy is still a batch of its own.
+ */
+export function latestRevertibleBatch(target: string, upTo: number, view: TelemetryView): number | undefined {
+  const history = historyOf(view)
+  const reverted = history.reverted.get(target)
+  const emitted = history.emitted.get(target)
+  const deploys = new Map<number, number>()
+  if (upTo >= 0) {
+    for (const e of view.eventsIn(0, upTo)) {
+      if (e.kind === 'deploy' && e.target === target) deploys.set(e.tick, (deploys.get(e.tick) ?? 0) + 1)
+    }
+  }
+  let latest: number | undefined
+  for (const [tick, count] of deploys) {
+    if (count <= (emitted?.get(tick) ?? 0) || reverted?.has(tick) === true) continue
+    if (latest === undefined || tick > latest) latest = tick
+  }
+  return latest
+}
+
+/** `rollback target` in `ctx.tick` (te), for action number `seq` (ADR-012 §4). */
+function rollback(target: string, seq: number, ctx: ActionEffectContext): TickEffect {
+  const { tick, view, lifecycle } = ctx
+  // Deploys with tick <= world.tick at act() time = te - 1 (the view is simulated up to te - 1).
+  const batch = latestRevertibleBatch(target, tick - 1, view)
+  // Without a batch: nothing at all in the telemetry; the action still costs its ticks (ADR-012 §4).
+  if (batch === undefined) return {}
+  const history = historyOf(view)
+  const reverted = history.reverted.get(target) ?? new Set<number>()
+  reverted.add(batch)
+  history.reverted.set(target, reverted)
+  const emitted = history.emitted.get(target) ?? new Map<number, number>()
+  emitted.set(tick, (emitted.get(tick) ?? 0) + 1)
+  history.emitted.set(target, emitted)
+  // The faults bound to this batch (bad_deploy deploys at its startTick) are ended in te.
+  for (const entry of lifecycle.activeOn(target, tick)) {
+    if (faultActionReactions[entry.fault.kind].revertedByRollback && entry.fault.startTick === batch) lifecycle.end(entry, tick)
+  }
+  // Rolling process replacement: no `down` of its own (the cache rule's induced module keeps its own).
+  replaceProcess(target, seq, ctx)
+  return { events: [{ kind: 'deploy', target }] }
 }
