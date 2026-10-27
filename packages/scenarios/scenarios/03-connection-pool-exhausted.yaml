@@ -1,0 +1,51 @@
+# Cenário 03 da campanha (SPEC §7, linha 3): pool de conexões esgotado, nível Júnior.
+# Tarefa T2.15. Testes: test/scenarios/03.test.ts (CN-1, CN-2, CN-6, CN-7, DET).
+#
+# Calibração (medida com a seed abaixo; a suíte de replay final é da T2.20):
+# - leakedAt(s) = min(40, 1 × (s + 1)): o pool de cada instância de payment esgota em s = 39,
+#   ou seja, no tick 45. O alerta vem 3 ticks depois (48), com as 3 instâncias em 40/40.
+# - restart de payment faz `reset` da falha (ADR-012 §5): o pool só esgota de novo 40 ticks
+#   depois do tick de efeito, fora da janela [t+4, t+33] da ADR-013 §4. O restart compra tempo,
+#   não corrige o vazamento (SPEC §3.5: mitigar sem root cause).
+# - Noise não muda telemetria (S-4); fica visível só para quem pergunta whatChanged (Pleno).
+id: 03-connection-pool-exhausted
+title: "Checkout slow on launch day"
+level: junior
+teaches: "An aggregate metric can hide a single bottleneck"
+trap: "The alert names gateway and its p50 and error rate look healthy, so the slow tail seems to be gateway's own; the requests are waiting on payment's database pool"
+seed: "launch-day-107"
+system: default-shop
+
+faults:
+  - kind: connection_pool_exhaustion
+    target: payment
+    startTick: 6
+    params: { poolSize: 40, leakPerTick: 1, acquireTimeoutMs: 2000 }
+
+noise:
+  - kind: deploy
+    target: catalog
+    tick: 40
+    note: "product page copy update"
+  - kind: config
+    target: gateway
+    tick: 45
+    note: "TLS certificate rotation"
+
+alert:
+  tick: 48
+  text: "[FIRING] GatewayLatencyP95High service=gateway severity=page: p95 request latency > 1s"
+
+impactBudget: 30
+
+referencePath:
+  - { ask: dashboard, service: payment }
+  - { ask: logs, service: payment, window: 30 }
+  - { act: restart, target: payment }
+
+rootCause: "payment never returns some of its database connections, so each instance's pool of 40 fills up and checkout requests queue on db.acquire."
+
+review:
+  redundant: ["dashboard gateway", "logs gateway"]
+  keySignal: "payment dashboard: connections pinned at the pool limit while p95 sits near 2s"
+  keySignalAsk: "dashboard payment"
