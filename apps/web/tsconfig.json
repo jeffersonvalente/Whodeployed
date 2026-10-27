@@ -1,0 +1,24 @@
+{
+  "//": [
+    "apps/web typecheck (ADR-015 §2: strict options of ADR-008). One project for src/, test/ and the Vite config.",
+    "src/ must not use Node APIs: eslint.config.js forbids node:* imports and process/require there.",
+    "@whodeployed/* resolve through their package exports (dist/), so `pnpm -r build` runs first (ADR-014 §4)."
+  ],
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "jsx": "react-jsx",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "noImplicitOverride": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "types": ["node"]
+  },
+  "include": ["src", "test", "vite.config.ts"]
+}

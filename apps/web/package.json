@@ -1,0 +1,40 @@
+{
+  "name": "@whodeployed/web",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Whodeployed in the browser. Phase 2: unstyled text prototype (ADR-015).",
+  "license": "Apache-2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc -p tsconfig.json",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "check-static": "bash scripts/check-static.sh"
+  },
+  "dependencies": {
+    "@whodeployed/engine": "workspace:*",
+    "@whodeployed/scenarios": "workspace:*",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@testing-library/dom": "^10",
+    "@testing-library/react": "^16",
+    "@types/node": "^22",
+    "@types/react": "^18.3",
+    "@types/react-dom": "^18.3",
+    "@vitejs/plugin-react": "^4",
+    "eslint": "^9",
+    "jsdom": "^25",
+    "typescript": "~5.6",
+    "typescript-eslint": "^8",
+    "vite": "^5",
+    "vitest": "^2"
+  }
+}
