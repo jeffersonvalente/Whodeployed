@@ -23,6 +23,7 @@ export default defineConfig({
       thresholds: {
         'src/sim/**': QC1,
         'src/faults/**': QC1,
+        'src/sim/impact.ts': QC1,
       },
     },
   },
