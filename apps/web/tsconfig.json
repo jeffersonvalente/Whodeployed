@@ -2,10 +2,7 @@
   "//": [
     "apps/web typecheck (ADR-015 §2: strict options of ADR-008). One project for src/, test/ and the Vite config.",
     "src/ must not use Node APIs: eslint.config.js forbids node:* imports and process/require there.",
-    "paths: temporary bridge until @whodeployed/scenarios has a package.json (T2.9). Until then the contract",
-    "packages/scenarios/src/types.ts is type-checked from source, and the engine it imports resolves to this",
-    "package's own workspace link. Source code never imports these paths (PR-19, eslint.config.js); remove both",
-    "entries when @whodeployed/scenarios becomes a workspace dependency of apps/web."
+    "@whodeployed/* resolve through their package exports (dist/), so `pnpm -r build` runs first (ADR-014 §4)."
   ],
   "compilerOptions": {
     "target": "ES2022",
@@ -21,11 +18,7 @@
     "verbatimModuleSyntax": true,
     "skipLibCheck": true,
     "noEmit": true,
-    "types": ["node"],
-    "paths": {
-      "@whodeployed/scenarios": ["../../packages/scenarios/src/types.ts"],
-      "@whodeployed/engine": ["./node_modules/@whodeployed/engine"]
-    }
+    "types": ["node"]
   },
   "include": ["src", "test", "vite.config.ts"]
 }

@@ -35,7 +35,7 @@ jobs:
           fi
       - name: Web static checks (PR-2, PR-3)
         run: bash apps/web/scripts/check-static.sh
-      # $CLI = node packages/engine/dist/cli/main.js, built by the step above (ADR-007).
+      # $CLI = node packages/engine/dist/cli/main.js, built by the `build` step right after install (ADR-007).
       - name: Engine CLI checks (D-1, D-2, CLI-3, CLI-4, CLI-5, P-4)
         run: bash packages/engine/scripts/ci-engine.sh
       - name: Engine pack smoke (PUB-1, PUB-2)

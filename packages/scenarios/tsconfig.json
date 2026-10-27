@@ -1,0 +1,21 @@
+{
+  "//": "Library typecheck (ADR-008, ADR-014): src/ except src/node.ts, ES2022 only, no DOM and no @types/node, so the browser entry (\".\") cannot use Node APIs. The engine resolves through its public entry (its dist/, built first: ADR-014 §4). Node-side code (src/node.ts, tests, scripts, configs) is checked by tsconfig.node.json.",
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "noImplicitOverride": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "declaration": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "types": []
+  },
+  "include": ["src"],
+  "exclude": ["src/node.ts"]
+}
