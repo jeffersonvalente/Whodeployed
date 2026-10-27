@@ -8,7 +8,13 @@
  * (FASE-2 EN-5: no referencePath, rootCause, teaches or trap in packages/engine/src; SPEC §6
  * "the UI does not know YAML"). The engine types used below are imported from its public entry.
  *
+ * SPEC §6: packages/scenarios depends on the engine's *types* only. Code in packages/scenarios/src
+ * uses `import type` from '@whodeployed/engine' and never a runtime value; every function that
+ * needs the engine at runtime receives it as an `EngineRuntime` argument, supplied by the caller
+ * (tests and scripts of this package, or apps/web, which depends on the engine). ADR-014 §1.1.
+ *
  * Sections:
+ *   0. Engine runtime injected by the caller (ADR-014 §1.1).
  *   1. Scenario as loaded from YAML (SPEC §7, ADR-014).
  *   2. Question patterns used by `review` (ADR-014).
  *   3. Repertoire per level (FASE-2 "Repertório do nível", ADR-014).
@@ -17,15 +23,37 @@
  *   5. Data bundle consumed by the prototype (ADR-014, ADR-015).
  */
 import type {
+  AccumulatedImpact,
   Action,
+  CreateSimulation,
   EngineErrorInfo,
   Fault,
   NoiseEvent,
   Question,
   QuestionKind,
+  ResolveFaults,
   SimulationConfig,
   SupportedActionKind,
+  SystemDefinition,
 } from '@whodeployed/engine'
+
+// ---------------------------------------------------------------------------
+// 0. Engine runtime (ADR-014 §1.1)
+// ---------------------------------------------------------------------------
+
+/**
+ * The engine values a scenarios function needs, passed in by the caller so that
+ * packages/scenarios/src depends on engine types only (SPEC §6). A caller builds it from the
+ * engine's public entry, e.g. `{ resolveFaults, createSimulation, accumulatedImpact,
+ * systems: { 'default-shop': defaultShop } }`.
+ */
+export interface EngineRuntime {
+  resolveFaults: ResolveFaults
+  createSimulation: CreateSimulation
+  accumulatedImpact: AccumulatedImpact
+  /** Systems by the name used in the YAML `system` field. Phase 2: only 'default-shop'. */
+  systems: Readonly<Record<string, SystemDefinition>>
+}
 
 // ---------------------------------------------------------------------------
 // 1. Scenario (SPEC §7)
@@ -113,12 +141,12 @@ export type PlayableLevel = Extract<Level, 'junior' | 'pleno'>
 export interface Repertoire {
   /** `dashboard` of any component. */
   readonly dashboard: boolean
-  /** `logs` of any component. `window`: fixed number of ticks, or 'free' (integer >= 1 chosen by the player). */
-  readonly logs: { readonly window: number | 'free'; readonly filter: boolean }
+  /** `logs` of any component with this fixed window in ticks (30 = the "last 5 min" of SPEC §5), with or without `filter`. */
+  readonly logs: { readonly window: number; readonly filter: boolean }
   /** `trace` with these percentiles (empty = not offered). */
   readonly tracePercentiles: readonly (50 | 95 | 99)[]
-  /** `whatChanged`, window chosen by the player (integer >= 1), when true. */
-  readonly whatChanged: boolean
+  /** `whatChanged` with this fixed window in ticks, or null when not offered. */
+  readonly whatChanged: { readonly window: number } | null
   /** `compare` with these `by` values (empty = not offered). Phase 2 never offers 'lastWeek'. */
   readonly compareBy: readonly 'instance'[]
   /** Actions offered, all with a target among the 9 components. */
@@ -146,11 +174,14 @@ export interface ScenarioErrorInfo {
   engine?: EngineErrorInfo
 }
 
-/** Parses one YAML document. Throws ScenarioError (class in src/errors.ts implementing ScenarioErrorInfo). */
-export type ParseScenario = (source: string, file: string) => Scenario
+/**
+ * Parses one YAML document; faults are resolved and noise validated with the injected engine, whose
+ * EngineError is propagated (CN-4). Throws ScenarioError (class in src/errors.ts implementing ScenarioErrorInfo).
+ */
+export type ParseScenario = (source: string, file: string, engine: EngineRuntime) => Scenario
 
 /** Builds the engine input of a scenario: system by name, seed, faults, noise (no scenario text). */
-export type ToSimulationConfig = (scenario: Scenario) => SimulationConfig
+export type ToSimulationConfig = (scenario: Scenario, engine: EngineRuntime) => SimulationConfig
 
 // ---------------------------------------------------------------------------
 // 4b. Effective mitigation (ADR-013 §4) — one implementation, shared by the content tests
@@ -174,9 +205,14 @@ export interface MitigationCheck {
 /**
  * Replays `steps` on a fresh simulation of `scenario`, starting at `alert.tick`: a question
  * advances by its tickCost, an action by its tickCost, a wait by 1, never past tick 360. Returns
- * one MitigationCheck per action, in order. Pure and deterministic (same input => same output).
+ * one MitigationCheck per action, in order. The 30-tick window after an action is never truncated:
+ * it simulates past tick 360 when needed (ADR-013 §4). Pure and deterministic (same input => same output).
  */
-export type CheckMitigations = (scenario: Scenario, steps: readonly PlayStep[]) => readonly MitigationCheck[]
+export type CheckMitigations = (
+  scenario: Scenario,
+  steps: readonly PlayStep[],
+  engine: EngineRuntime,
+) => readonly MitigationCheck[]
 
 // ---------------------------------------------------------------------------
 // 5. Data bundle (`@whodeployed/scenarios/data`, generated at build time from the YAML files)

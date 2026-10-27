@@ -31,6 +31,7 @@ apps/web/
   src/app.tsx               roteamento mínimo: lista | sessão (por estado e ?test=<id>)
   src/data.ts               ÚNICO import de @whodeployed/scenarios/data (testes fazem vi.mock deste arquivo)
   src/build-info.ts         ENGINE_VERSION e BUILD_SHA (constantes de build)
+  src/engine-runtime.ts     monta o EngineRuntime (ADR-014 §1.1) a partir de @whodeployed/engine
   src/session/              núcleo de sessão: TypeScript puro, sem DOM e sem React
     types.ts                contrato (Arquiteto; ADR-016)
     session.ts              createSession: relógio, ask/act/wait, impacto, fim no tick 360
@@ -59,7 +60,7 @@ apps/web/
 
 ### 5. Sessão (o loop de SPEC §4 em texto)
 
-- **Início (PR-5):** `createSimulation(toSimulationConfig(scenario))`, `advance(alert.tick)`, impacto acumulado até `alert.tick`. A tela mostra o alerta, o tick, `impact N / B` e a lista dos 9 componentes; nenhum sinal sem pedido.
+- **Início (PR-5):** `deps.engine.createSimulation(toSimulationConfig(scenario, deps.engine))`, `advance(alert.tick)`, impacto acumulado até `alert.tick`. A tela mostra o alerta, o tick, `impact N / B` e a lista dos 9 componentes; nenhum sinal sem pedido.
 - **Relógio (PR-8):** pergunta avança `Answer.tickCost` (ADR-006); ação avança `ActionResult.tickCost` (ADR-012); `wait` avança 1; anotar, descartar e ler custam 0. O avanço nunca passa do tick 360: se o custo passaria, avança só até 360. No tick 360 a sessão termina sozinha com `end` de `reason: 'tickLimit'` e `final: { kind: 'unknown' }`. Impacto = `accumulatedImpact(view, tick)` (ADR-013), memoizado por tick. `SEVERE` em texto quando impacto ≥ orçamento.
 - **Repertório (PR-6):** a sessão só aceita o que `inRepertoire(level, step)` aceita (ADR-014). A interface monta os controles a partir de `repertoire[level]`: o que não está lá não aparece, nem desabilitado. Júnior: `logs` com `window: 30` fixo e sem filtro.
 - **Erros:** `EngineError` de pergunta (por exemplo, `invalid_filter`, ADR-006 Emenda 2) vira uma linha de texto com `field` e `message`, sem custo de tick e sem passo no log.

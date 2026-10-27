@@ -1,6 +1,6 @@
 # ADR-013 — Função de impacto: impacto por tick derivado da telemetria
 
-- **Status:** aceita (valores iniciais; calibração final pela tarefa T2.5, registrada como emenda desta ADR no mesmo PR)
+- **Status:** aceita (valores iniciais; calibração final pela tarefa T2.6, registrada como emenda desta ADR no mesmo PR)
 - **Data:** 2026-10-26
 - **Decisor:** Arquiteto (decisão delegada, SPEC §12: "estrutura interna do motor"; PRD FASE-2 "Impacto = contador por tick definido em ADR pelo Arquiteto, com as restrições de EN-6")
 - **Referência:** SPEC §3.3, §3.4, §3.5, §4 ("relógio de impacto"), §7 (`impactBudget`: "ticks até incidente grave"); PRD FASE-2 EN-6, EN-8, PR-5, PR-8, PR-11, R-4, "Mitigação eficaz"; ADR-002, ADR-005, ADR-012
@@ -29,7 +29,7 @@ Valores iniciais: `SLOW_MS = 1000`, `THETA = 0,05`.
 - Módulo `src/sim/impact.ts` (coberto pelo threshold de `src/sim/**`, EN-8). Só lê a `TelemetryView` (`world`, `spansOf`). Não importa nada de cenário, não tem nível, não usa `Math.random` nem relógio (D-4).
 - Desempenho: `accumulatedImpact` sobre 360 ticks percorre os spans de 2 componentes por tick; quem chama a cada passo (o protótipo) pode memoizar por tick, porque um tick passado nunca muda (ADR-010).
 
-### 3. Calibração (tarefa T2.5)
+### 3. Calibração (tarefa T2.6)
 
 Grade, nesta ordem de preferência: `(SLOW_MS, THETA)` ∈ (1000, 0,05), (1000, 0,10), (2000, 0,05), (2000, 0,10). A tarefa escolhe o primeiro par que cumpre, com as listas de seeds de `test/support/signature.ts`:
 
@@ -42,7 +42,7 @@ Medição do Arquiteto com o par inicial (10 seeds `imp-0..9`, defaults, ticks 1
 ### 4. Leitura das definições do PRD
 
 - **Grave** (PR-8): acumulado ≥ `impactBudget`.
-- **Mitigação eficaz** (PRD, Convenções; R-4; CN-3; CN-5): para uma ação no tick `t` (efeito em `t + 1`, ADR-012), nenhum tick impactado em `[t + 4, t + 33]` simulando sem outra ação. Ou seja, o impacto "para de acumular em até 3 ticks" e "não acumula em nenhum dos 30 ticks seguintes".
+- **Mitigação eficaz** (PRD, Convenções; R-4; CN-3; CN-5): para uma ação no tick `t` (efeito em `t + 1`, ADR-012), nenhum tick impactado em `[t + 4, t + 33]` simulando sem outra ação. Ou seja, o impacto "para de acumular em até 3 ticks" e "não acumula em nenhum dos 30 ticks seguintes". A janela nunca é truncada: para ação depois do tick 327, a verificação simula além do 360 (o limite 360 é da sessão, ADR-015 §5, não do motor, que aceita até 100 000 ticks).
 - **Impacto na mitigação** (PR-11 frase 3, CN-9f, R-4): acumulado em `[0, t]`, `t` = tick da ação eficaz.
 
 ## Consequências

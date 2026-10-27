@@ -10,16 +10,8 @@
  *   2. Session core API (ADR-015; PR-5, PR-8, PR-9, PR-10, PR-12).
  *   3. Review, replay and results (PR-11, PR-14, PR-15).
  */
-import type {
-  AccumulatedImpact,
-  Action,
-  ActionResult,
-  Answer,
-  ComponentName,
-  CreateSimulation,
-  Question,
-} from '@whodeployed/engine'
-import type { PlayableLevel, Scenario, ToSimulationConfig } from '@whodeployed/scenarios'
+import type { Action, ActionResult, Answer, ComponentName, Question } from '@whodeployed/engine'
+import type { EngineRuntime, PlayableLevel, Scenario } from '@whodeployed/scenarios'
 
 // ---------------------------------------------------------------------------
 // 1. Session log v1 (ADR-016)
@@ -82,9 +74,8 @@ export interface SessionLogV1 {
 // ---------------------------------------------------------------------------
 
 export interface SessionDeps {
-  createSimulation: CreateSimulation
-  accumulatedImpact: AccumulatedImpact
-  toSimulationConfig: ToSimulationConfig
+  /** Built from @whodeployed/engine's public entry; passed to the scenarios functions (ADR-014 §1.1). */
+  engine: EngineRuntime
   /** Wall clock in ms (performance.now in the browser, a fake in tests). Only feeds `wallMs`. */
   wallClock: () => number
   engineVersion: string

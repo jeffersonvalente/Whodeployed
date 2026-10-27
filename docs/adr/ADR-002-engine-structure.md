@@ -149,17 +149,17 @@ Registra o que a fase 2 consome e acrescenta. Os itens 2.1–2.3 só registram o
 
 ### 2.1 API pública de `src/index.ts` (I24-1; contrato SemVer a partir de `engine-v0.1.0`)
 
-Exportações de **runtime** (a lista que o teste da T2.1 compara com `Object.keys(await import('../src/index.js'))`, em ordem alfabética):
+Exportações de **runtime** (a lista que o teste da T2.1 compara com `Object.keys(await import('../src/index.js'))`; a tabela está na ordem que `Object.keys` devolve para um namespace ESM, por code unit, maiúsculas antes de minúsculas, e o teste compara nessa ordem):
 
 | Nome | Desde | Origem |
 | --- | --- | --- |
-| `accumulatedImpact` | fase 2 (T2.5) | `sim/impact.ts`, ADR-013 |
+| `EngineError` | 0.1.0 | `errors.ts` |
+| `accumulatedImpact` | fase 2 (T2.6) | `sim/impact.ts`, ADR-013 |
 | `createSimulation` | 0.1.0 | `sim/simulation.ts` |
 | `defaultShop` | 0.1.0 | `world/default-shop.ts` |
-| `EngineError` | 0.1.0 | `errors.ts` |
 | `faultCatalog` | 0.1.0 | `faults/catalog.ts` |
 | `faultKinds` | 0.1.0 | `faults/catalog.ts` |
-| `impactOfTick` | fase 2 (T2.5) | `sim/impact.ts`, ADR-013 |
+| `impactOfTick` | fase 2 (T2.6) | `sim/impact.ts`, ADR-013 |
 | `isEngineError` | 0.1.0 | `errors.ts` |
 | `resolveFaults` | 0.1.0 | `faults/resolve.ts` |
 | `serializeRecord` | 0.1.0 | `sim/serialize.ts` |

@@ -61,10 +61,7 @@ export interface Answer {
   tickCost: number
 }
 
-/**
- * Part of the contract since phase 1. Phase 2 gives semantics to 'restart' and 'rollback' only
- * (ADR-012, applied through Simulation.act); every other kind throws EngineError 'unsupported_action'.
- */
+/** Part of the contract since phase 1; its effect on the simulation is out of scope until phase 2. */
 export type Action = {
   kind: 'restart' | 'rollback' | 'flagOff' | 'scale' | 'escalate' | 'declareMitigated'
   target?: string
@@ -452,7 +449,8 @@ export interface Simulation {
   /** Pure read against the current tick; never changes telemetry (Q-3). Throws EngineError (Q-10). */
   ask(question: Question): Answer
   /**
-   * Applies an Action (ADR-012). Validates it against the world, schedules its effect for tick
+   * Applies an Action (ADR-012). Phase 2 gives semantics to 'restart' and 'rollback' only; every
+   * other Action kind throws 'unsupported_action'. Validates it against the world, schedules its effect for tick
    * `world.tick + 1` and returns its cost; like ask(), it never advances the clock (the caller
    * advances by `tickCost`). Actions applied before the same advance() take effect in call order.
    * Same seed + same questions and actions at the same ticks => byte-identical telemetry (EN-4).
