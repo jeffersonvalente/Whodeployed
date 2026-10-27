@@ -10,13 +10,15 @@
  */
 import { describe, expect, it } from 'vitest'
 
-/** ADR-002 Emenda 2 §2.1, names "desde 0.1.0", in Object.keys order. */
+/** ADR-002 Emenda 2 §2.1 (0.1.0 plus phase 2, T2.6), in Object.keys order. */
 const publicRuntime = [
   'EngineError',
+  'accumulatedImpact',
   'createSimulation',
   'defaultShop',
   'faultCatalog',
   'faultKinds',
+  'impactOfTick',
   'isEngineError',
   'resolveFaults',
   'serializeRecord',
@@ -28,5 +30,11 @@ describe('public API (ADR-002 Emenda 2 §2.1)', () => {
   it('src/index.ts exports exactly the runtime names of the ADR table', async () => {
     const api = await import('../src/index.js')
     expect(Object.keys(api).sort()).toEqual(publicRuntime)
+  })
+
+  it('exports accumulatedImpact and impactOfTick as functions (T2.6, ADR-013)', async () => {
+    const api: Record<string, unknown> = await import('../src/index.js')
+    expect(typeof api['accumulatedImpact']).toBe('function')
+    expect(typeof api['impactOfTick']).toBe('function')
   })
 })
