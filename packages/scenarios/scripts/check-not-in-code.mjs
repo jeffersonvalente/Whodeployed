@@ -96,16 +96,14 @@ export function extractFields(file, source) {
 function needles(value) {
   const patterns = new Set([value, value.replace(/\n+$/, '')])
   if (value.includes('\n')) for (const line of value.split('\n')) patterns.add(line.trim())
-  const forms = new Set()
+  const out = []
   for (const p of patterns) {
     if (p.trim() === '') continue
     const json = JSON.stringify(p).slice(1, -1)
-    forms.add(p)
-    forms.add(json)
-    forms.add(p.replace(/\\/g, '\\\\').replace(/'/g, "\\'"))
-    forms.add(json.replace(/'/g, "\\'"))
+    const forms = new Set([p, json, p.replace(/\\/g, '\\\\').replace(/'/g, "\\'"), json.replace(/'/g, "\\'")])
+    for (const form of forms) out.push({ form, pattern: p })
   }
-  return [...forms]
+  return out
 }
 
 function listFiles(dir) {
@@ -140,7 +138,11 @@ export function check({ scenarios, trees }) {
     for (const path of listFiles(tree)) {
       const content = readFileSync(path, 'utf8')
       for (const s of strings) {
-        if (s.needles.some((n) => content.includes(n))) hits.push({ path: display(path), file: s.file, field: s.field, value: s.value })
+        const match = s.needles.find((n) => content.includes(n.form))
+        if (match !== undefined) {
+          const line = match.pattern === s.value || match.pattern === s.value.replace(/\n+$/, '') ? undefined : match.pattern
+          hits.push({ path: display(path), file: s.file, field: s.field, value: s.value, line })
+        }
       }
     }
   }
@@ -161,7 +163,8 @@ function main() {
   const scope = result.trees.map(display).join(', ')
   if (result.hits.length > 0) {
     for (const h of result.hits) {
-      console.error(`${h.path}: scenario ${h.field} ${JSON.stringify(h.value)} (from ${h.file})`)
+      const line = h.line === undefined ? '' : ` [matched line ${JSON.stringify(h.line)}]`
+      console.error(`${h.path}: scenario ${h.field} ${JSON.stringify(h.value)}${line} (from ${h.file})`)
     }
     console.error(
       `check-not-in-code (CN-8): ${result.hits.length} scenario string(s) found in code. ` +

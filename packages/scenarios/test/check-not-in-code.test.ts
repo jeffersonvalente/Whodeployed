@@ -191,6 +191,11 @@ rootCause: |
     const r = run(['--scenarios', scenariosDir(yaml), '--tree', tree("const s = ['second sample line']\n")])
     expect(r.status).toBe(1)
     expect(r.stderr).toContain('scenario rootCause')
+    expect(r.stderr).toContain('[matched line "second sample line"]')
+    // A whole-value match names no line.
+    const whole = run(['--scenarios', scenariosDir(yaml), '--tree', tree('const s = "first sample line\\nsecond sample line"\n')])
+    expect(whole.status).toBe(1)
+    expect(whole.stderr).not.toContain('[matched line')
   })
 
   it.each([
