@@ -1,0 +1,43 @@
+# Campaign #1 (SPEC §7, row 1): junior, service_crash_loop. Format: SPEC §7, ADR-014 §2.
+# Lesson: the alert names the caller (gateway); the gateway log names the upstream that refuses
+# connections; that upstream's log shows the process dying. Read logs, in that order, first.
+# Trap (SPEC §3.4): the crashing service's dashboard shows 0% errors, because a process that is
+# down records no failed request of its own; the errors land on the caller.
+# No noise: the junior repertoire has no whatChanged, so a deploy/config distraction would be
+# invisible to the player (decoration, SPEC §3.1). The "noise >= 1" rule starts at scenario #3.
+# Asserted by test/scenarios/01.test.ts (CN-1, CN-2, CN-6, CN-7, DET).
+# Final calibration of startTick / alert.tick / impactBudget / referencePath: T2.20 (replay).
+
+id: 01-cart-crash-loop
+title: "Storefront returning 5xx"
+level: junior
+teaches: "Read the alert and the right log first"
+trap: "The cart dashboard shows 0% errors while the gateway, its caller, is the one returning 5xx"
+seed: "storefront-5xx-07"
+system: default-shop
+
+faults:
+  - kind: service_crash_loop
+    target: cart
+    startTick: 12
+    params: { uptimeTicks: 1, restartTicks: 3 }
+
+noise: []
+
+alert:
+  tick: 24                           # 12 ticks (2 min) after startTick: the "for 2m" of the text
+  text: "[FIRING] HighErrorRate service=gateway severity=page: 5xx ratio > 5% for 2m"
+
+impactBudget: 36
+
+referencePath:
+  - { ask: logs, service: gateway, window: 30 }
+  - { ask: logs, service: cart, window: 30 }
+  - { act: restart, target: cart }
+
+rootCause: "Every cart instance crashes shortly after starting and restarts in a loop, so gateway calls to cart are refused."
+
+review:
+  redundant: ["dashboard gateway"]
+  keySignal: "cart logs: every instance logs 'process exited' with the same exit code and a climbing restartCount"
+  keySignalAsk: "logs cart"
