@@ -2,9 +2,11 @@
  * T2.2 — Simulation.act(): validation, cost, scheduling at tick + 1, fault life cycle (endTick,
  * generations, induced faults, stream prefixes) and the `restart` primitive (ADR-012 §1–4, §6;
  * ADR-005 Emenda 3; PRD FASE-2 EN-2, EN-3, EN-4, EN-5, EN-8, DET).
+ * T2.3 — the reaction table FaultActionReactions (ADR-012 §5) applied by the process replacement of
+ * `restart`, and the cache rule (induced cache_cold_start, ADR-012 §4).
  *
- * The reaction of faults to a restart (FaultActionReactions, cache rule) is T2.3 and `rollback`
- * with deploy history is T2.4; here a rollback is validated, costs its ticks and changes nothing.
+ * `rollback` with deploy history is T2.4; here a rollback is validated, costs its ticks and changes
+ * nothing.
  */
 import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
@@ -21,12 +23,14 @@ import {
   actionCostTable,
   actionEffect,
   createFaultLifecycle,
+  faultActionReactions,
+  replaceProcess,
   validateAction,
 } from '../../src/sim/actions.js'
 import { activateFaults, hooksActiveAt } from '../../src/sim/hooks.js'
 import { createRngFactory } from '../../src/sim/rng.js'
 import { toNdjson } from '../../src/sim/serialize.js'
-import { createSimulation } from '../../src/sim/simulation.js'
+import { createSimulation, createSimulationWith } from '../../src/sim/simulation.js'
 import { buildWorld } from '../../src/world/build.js'
 import { defaultShop } from '../../src/world/default-shop.js'
 import type {
@@ -52,6 +56,12 @@ const NAMES = COMPONENTS.map((c) => c.name)
 /** ADR-005 Emenda 1: request log and traffic messages (written out: the test does not trust the code). */
 const TRAFFIC_MESSAGES = ['request completed', 'connection refused', 'upstream timeout', 'upstream error', 'dependency call failed']
 const instancesOf = (name: string): string[] => [...(COMPONENTS.find((c) => c.name === name)?.instances ?? [])]
+/** Caches follow the cache rule of ADR-012 §4 (their restart events are the cache_cold_start module's). */
+const CACHES = world.deps.filter((d) => d.kind === 'cache').map((d) => d.name)
+const NON_CACHE = NAMES.filter((n) => !CACHES.includes(n))
+/** The restart events of cache_cold_start (ADR-004): one config event with restart: true per instance. */
+const coldStartEvents = (cache: string, tick: number): EventRecord[] =>
+  instancesOf(cache).map((instance) => ({ type: 'event', tick, kind: 'config', target: cache, instance, restart: true }))
 
 function caught(fn: () => unknown): EngineError {
   try {
@@ -248,7 +258,8 @@ describe('cost and ActionResult (ADR-012 §1, §3)', () => {
 describe('restart X (ADR-012 §4): every instance of X down at tick + 1 and one config event', () => {
   const seeds = ['r-a', 'r-b', 'r-c']
 
-  it.each(NAMES)('restart %s', (target) => {
+  // T2.3: a cache is excluded here; its restart follows the cache rule (see "cache rule" below).
+  it.each(NON_CACHE)('restart %s', (target) => {
     for (const seed of seeds) {
       const sim = createSimulation(shop(seed))
       const base = createSimulation(shop(seed))
@@ -326,7 +337,8 @@ describe('restart X (ADR-012 §4): every instance of X down at tick + 1 and one 
     const sim = createSimulation(shop('tick-0'))
     sim.act({ kind: 'restart', target: 'redis' })
     sim.advance(1)
-    expect(eventsAt(sim, 1)).toEqual([{ type: 'event', tick: 1, kind: 'config', target: 'redis', restart: true }])
+    // T2.3: redis is a cache, so the events of tick 1 are the induced cache_cold_start's (ADR-012 §4).
+    expect(eventsAt(sim, 1)).toEqual(coldStartEvents('redis', 1))
   })
 
   it('a restart never changes ticks after the outage beyond what the down tick caused: run continues deterministically', () => {
@@ -373,10 +385,12 @@ describe('event order in a tick (ADR-005 Emenda 3): fault, action (call order), 
     expect(faultEvents.length).toBeGreaterThan(0)
     expect(faultEvents.every((e) => e.kind === 'deploy' && e.target === 'cart')).toBe(true)
 
+    // T2.3: the restart of redis (a cache) emits no action event; the induced cache_cold_start
+    // emits its restart events as a fault, after the configured faults (creation order).
     expect(eventsAt(sim, 6)).toEqual([
       ...faultEvents,
+      ...coldStartEvents('redis', 6),
       { type: 'event', tick: 6, kind: 'config', target: 'payment', restart: true },
-      { type: 'event', tick: 6, kind: 'config', target: 'redis', restart: true },
       { type: 'event', tick: 6, kind: 'config', target: 'cart', restart: true },
       { type: 'event', tick: 6, kind: 'deploy', target: 'catalog', note: 'harmless copy change' },
       { type: 'event', tick: 6, kind: 'config', target: 'auth' },
@@ -410,7 +424,34 @@ describe('event order in a tick (ADR-005 Emenda 3): fault, action (call order), 
   })
 
   it('restarting an instance already down because of a fault keeps one down tick (union) and adds the event', () => {
+    // T2.3: with the real modules this no longer happens on the restarted component (the crash loop
+    // is cleared in te, a cache follows the cache rule), so the union is checked with a fake module
+    // of a kind whose reaction is `none` (bad_deploy) that keeps catalog-0 down and emits one event.
     const seed = 'union'
+    const fakeBadDeploy: FaultModule<'bad_deploy'> = {
+      kind: 'bad_deploy',
+      activate: () => ({ onTick: ({ tick }) => ({ down: ['catalog-0'], events: [{ kind: 'deploy', target: 'catalog', note: `t${tick}` }] }) }),
+    }
+    const registry = { ...faultRegistry, bad_deploy: fakeBadDeploy } as FaultRegistry
+    const config = shop(seed, { faults: faultsOf(seed, { kind: 'bad_deploy', target: 'catalog', startTick: 2 }) })
+    const sim = createSimulationWith(config, { registry })
+    sim.advance(3)
+    sim.act({ kind: 'restart', target: 'catalog' })
+    sim.advance(2)
+    const downOf = (tick: number) =>
+      recordsAt(sim, tick).flatMap((r) => (r.type === 'metric' && r.component === 'catalog' && r.instance !== undefined && r.cpu === 0 ? [r.instance] : []))
+    expect(downOf(4)).toEqual(instancesOf('catalog'))
+    expect(downOf(5)).toEqual(['catalog-0'])
+    expect(eventsAt(sim, 4)).toEqual([
+      { type: 'event', tick: 4, kind: 'deploy', target: 'catalog', note: 't4' },
+      { type: 'event', tick: 4, kind: 'config', target: 'catalog', restart: true },
+    ])
+  })
+
+  it('restarting a cache already cold-starting in te: one cold start (the action\'s), no duplicate event nor down', () => {
+    // T2.3 (ADR-012 §4, cache rule): the configured cache_cold_start active in te is ended and the
+    // induced one emits the events and the down tick; the restart emits nothing of its own.
+    const seed = 'union-cache'
     const config = shop(seed, { faults: faultsOf(seed, { kind: 'cache_cold_start', target: 'redis', startTick: 4 }) })
     const sim = createSimulation(config)
     sim.advance(3)
@@ -418,9 +459,11 @@ describe('event order in a tick (ADR-005 Emenda 3): fault, action (call order), 
     sim.advance(1)
     const base = createSimulation(config)
     base.advance(4)
-    const nonEvents = (s: Simulation) => toNdjson(recordsAt(s, 4).filter((r) => r.type !== 'event'))
-    expect(nonEvents(sim)).toBe(nonEvents(base))
-    expect(eventsAt(sim, 4)).toEqual([...eventsAt(base, 4), { type: 'event', tick: 4, kind: 'config', target: 'redis', restart: true }])
+    expect(eventsAt(sim, 4)).toEqual(eventsAt(base, 4))
+    expect(eventsAt(sim, 4)).toEqual(coldStartEvents('redis', 4))
+    for (const instance of instancesOf('redis')) {
+      expect(recordsAt(sim, 4).find((r) => r.type === 'metric' && r.instance === instance)).toMatchObject({ rps: 0, cpu: 0, connections: 0 })
+    }
   })
 })
 
@@ -615,9 +658,22 @@ describe('actionEffect (ADR-012 §4)', () => {
   const lifecycle = createFaultLifecycle([], world, createRngFactory('effect'), faultRegistry)
 
   it('restart: down = every instance of the target in world order; one config restart event', () => {
-    for (const target of NAMES) {
+    // T2.3: caches are excluded; their restart effect is empty (cache rule, next test).
+    for (const target of NON_CACHE) {
       const effect = actionEffect({ action: { kind: 'restart', target }, effectTick: 1, seq: 0 }, { tick: 1, world, lifecycle })
       expect(effect).toEqual({ down: instancesOf(target), events: [{ kind: 'config', target, restart: true }] })
+    }
+  })
+
+  it('restart of a cache: no down nor event of its own; a cache_cold_start is induced from te (cache rule)', () => {
+    const own = createFaultLifecycle([], world, createRngFactory('effect-cache'), faultRegistry)
+    for (const target of CACHES) {
+      const effect = actionEffect({ action: { kind: 'restart', target }, effectTick: 3, seq: 7 }, { tick: 3, world, lifecycle: own })
+      expect(effect).toEqual({})
+      const induced = own.entries.at(-1)
+      expect(induced?.fault).toMatchObject({ kind: 'cache_cold_start', target, startTick: 3 })
+      expect(induced?.origin).toEqual(['action', 7, 'cache_cold_start'])
+      expect(hooksActiveAt(own.active, 3).onTick?.({ tick: 3, world })?.down).toEqual(instancesOf(target))
     }
   })
 
@@ -629,5 +685,296 @@ describe('actionEffect (ADR-012 §4)', () => {
     expect(() => actionEffect({ action: { kind: 'restart', target: 'nope' }, effectTick: 1, seq: 0 }, { tick: 1, world, lifecycle })).toThrow(
       /not a component/,
     )
+  })
+})
+
+// ---------------------------------------------------------------------------
+// T2.3 — FaultActionReactions (ADR-012 §5) applied by the process replacement of `restart`,
+// and the cache rule (ADR-012 §4)
+// ---------------------------------------------------------------------------
+
+describe('FaultActionReactions = ADR-012 §5, row by row', () => {
+  // Written out from the ADR table (columns "SP (onProcessReplacement)" and "revertedByRollback"):
+  // the test does not trust the code.
+  const ADR_012_TABLE = {
+    service_crash_loop: { onProcessReplacement: 'clear', revertedByRollback: false },
+    disk_full: { onProcessReplacement: 'none', revertedByRollback: false },
+    connection_pool_exhaustion: { onProcessReplacement: 'reset', revertedByRollback: false },
+    bad_deploy: { onProcessReplacement: 'none', revertedByRollback: true },
+    slow_dependency: { onProcessReplacement: 'clear', revertedByRollback: false },
+    cache_cold_start: { onProcessReplacement: 'reset', revertedByRollback: false },
+  } as const
+
+  it.each(faultKinds)('%s', (kind) => {
+    expect(faultActionReactions[kind]).toEqual(ADR_012_TABLE[kind])
+  })
+
+  it('one row per FaultKind, in catalog order, frozen', () => {
+    expect(Object.keys(faultActionReactions)).toEqual([...faultKinds])
+    expect(Object.isFrozen(faultActionReactions)).toBe(true)
+    for (const kind of faultKinds) expect(Object.isFrozen(faultActionReactions[kind])).toBe(true)
+  })
+})
+
+/** R1 of phase 1: >= 10 seeds per cell. */
+const REACTION_SEEDS = Array.from({ length: 10 }, (_, i) => `reaction-${i}`)
+const START = 5
+const ACT_AT = 10
+const TE = ACT_AT + 1
+const UNTIL = 22
+
+/** Runs `faults` with a restart of `target` called at ACT_AT (effect in TE), up to tick UNTIL. */
+function restartRun(seed: string, faults: Fault[], target: string): Simulation {
+  const sim = createSimulation(shop(seed, { faults }))
+  sim.advance(ACT_AT)
+  sim.act({ kind: 'restart', target })
+  sim.advance(UNTIL - ACT_AT)
+  return sim
+}
+function plainRun(seed: string, faults: Fault[]): Simulation {
+  const sim = createSimulation(shop(seed, { faults }))
+  sim.advance(UNTIL)
+  return sim
+}
+const from = (sim: Simulation, tick: number) => toNdjson(sim.telemetry().all().filter((r) => r.tick >= tick))
+const defaultFault = (seed: string, kind: FaultKind) => faultsOf(seed, { kind, startTick: START })
+const targetOf = (kind: FaultKind) => faultCatalog[kind].defaultTarget
+
+describe('restart on the target of the fault (ADR-012 §5, column "restart no alvo"), >= 10 seeds', () => {
+  it.each(['service_crash_loop', 'slow_dependency'] as const)('%s: clear — from te + 1 the run is the run without the fault', (kind) => {
+    for (const seed of REACTION_SEEDS) {
+      const acted = restartRun(seed, defaultFault(seed, kind), targetOf(kind))
+      const withFault = plainRun(seed, defaultFault(seed, kind))
+      const noFault = plainRun(seed, [])
+      // The fault really was there after te in the plain run (otherwise the cell proves nothing).
+      expect(from(withFault, TE + 1)).not.toBe(from(noFault, TE + 1))
+      expect(from(acted, TE + 1)).toBe(from(noFault, TE + 1))
+      // te: the config restart event of the action.
+      expect(eventsAt(acted, TE)).toContainEqual({ type: 'event', tick: TE, kind: 'config', target: targetOf(kind), restart: true })
+    }
+  })
+
+  it.each(['disk_full', 'bad_deploy'] as const)('%s: none — from te + 1 the fault is intact (same run as without acting)', (kind) => {
+    for (const seed of REACTION_SEEDS) {
+      const acted = restartRun(seed, defaultFault(seed, kind), targetOf(kind))
+      const withFault = plainRun(seed, defaultFault(seed, kind))
+      expect(from(withFault, TE + 1)).not.toBe(from(plainRun(seed, []), TE + 1))
+      expect(from(acted, TE + 1)).toBe(from(withFault, TE + 1))
+      for (const instance of instancesOf(targetOf(kind))) {
+        expect(recordsAt(acted, TE).find((r) => r.type === 'metric' && r.instance === instance)).toMatchObject({ rps: 0, cpu: 0, connections: 0 })
+      }
+    }
+  })
+
+  it('connection_pool_exhaustion: reset — the leak starts over in te and the pool is exhausted again after ceil(poolSize / leakPerTick) ticks', () => {
+    const acquire = (sim: Simulation, tick: number) =>
+      recordsAt(sim, tick).filter((r) => r.type === 'span' && r.operation === 'db.acquire').length
+    const target = targetOf('connection_pool_exhaustion')
+    for (const seed of REACTION_SEEDS) {
+      const faults = defaultFault(seed, 'connection_pool_exhaustion')
+      const { poolSize, leakPerTick } = (faults[0] as Fault).params as { poolSize: number; leakPerTick: number }
+      // leaked(s) = min(poolSize, leakPerTick × (s + 1)); the pool is exhausted from s = again - 1 on.
+      const again = Math.ceil(poolSize / leakPerTick)
+      const acted = restartRun(seed, faults, target)
+      const withFault = plainRun(seed, faults)
+      const noFault = plainRun(seed, [])
+      const connections = (sim: Simulation, tick: number, instance: string) => {
+        const m = recordsAt(sim, tick).find((r) => r.type === 'metric' && r.instance === instance)
+        return m?.type === 'metric' ? m.connections : Number.NaN
+      }
+      for (const instance of instancesOf(target)) {
+        // Without acting the pool stays full after te.
+        expect(connections(withFault, TE + 1, instance)).toBe(poolSize)
+        // After the reset, s = tick - te: the instance holds the connections of the plain traffic
+        // plus leaked(s) = leakPerTick × (s + 1) of the new generation, while the pool has room
+        // (no wait, so the traffic is the traffic without the fault)...
+        for (let s = 1; s < again - 1; s++) {
+          expect(connections(acted, TE + s, instance)).toBe(connections(noFault, TE + s, instance) + leakPerTick * (s + 1))
+        }
+        // ...and the pool is full again from s = again - 1 on: the cause stays, the reset only buys time.
+        for (let t = TE + again - 1; t <= UNTIL; t++) expect(connections(acted, t, instance)).toBe(poolSize)
+      }
+      // No db.acquire wait while the pool has a free connection.
+      for (let t = TE + 1; t < TE + again - 1; t++) expect(acquire(acted, t)).toBe(0)
+      // And the run is the reset one, not the plain fault run.
+      expect(from(acted, TE + 1)).not.toBe(from(withFault, TE + 1))
+    }
+  })
+
+  it('cache_cold_start: cache rule — a new cooling from te; the module events and down once, no action event', () => {
+    for (const seed of REACTION_SEEDS) {
+      const acted = restartRun(seed, defaultFault(seed, 'cache_cold_start'), 'redis')
+      expect(eventsAt(acted, TE)).toEqual(coldStartEvents('redis', TE))
+      for (const instance of instancesOf('redis')) {
+        expect(recordsAt(acted, TE).find((r) => r.type === 'metric' && r.instance === instance)).toMatchObject({ rps: 0, cpu: 0, connections: 0 })
+      }
+    }
+  })
+})
+
+describe('restart on another component (ADR-012 §5, column "restart em outro"): the fault is intact', () => {
+  /** A non-cache component other than the fault's target. */
+  const otherOf = (kind: FaultKind) => (targetOf(kind) === 'cart' ? 'auth' : 'cart')
+
+  it.each(faultKinds)('%s', (kind) => {
+    for (const seed of REACTION_SEEDS) {
+      const acted = restartRun(seed, defaultFault(seed, kind), otherOf(kind))
+      const withFault = plainRun(seed, defaultFault(seed, kind))
+      expect(from(acted, TE + 1)).toBe(from(withFault, TE + 1))
+      expect(eventsAt(acted, TE)).toContainEqual({ type: 'event', tick: TE, kind: 'config', target: otherOf(kind), restart: true })
+    }
+  })
+})
+
+describe('cache rule (ADR-012 §4): restart of redis without any fault', () => {
+  it('one cold start: the module events and down in te (one event per instance), forced misses afterwards', () => {
+    const toPostgres = (sim: Simulation, tick: number) =>
+      recordsAt(sim, tick).filter((r) => r.type === 'span' && r.kind === 'client' && r.peer === 'postgres').length
+    for (const seed of REACTION_SEEDS) {
+      const acted = restartRun(seed, [], 'redis')
+      const base = plainRun(seed, [])
+      expect(eventsAt(acted, TE)).toEqual(coldStartEvents('redis', TE))
+      for (const instance of instancesOf('redis')) {
+        expect(recordsAt(acted, TE).find((r) => r.type === 'metric' && r.instance === instance)).toMatchObject({ rps: 0, cpu: 0, connections: 0 })
+      }
+      // Forced misses fall through to the backing store in the following ticks (SPEC §3.4: the pain shows in postgres).
+      for (let t = TE + 1; t <= TE + 5; t++) expect(toPostgres(acted, t)).toBeGreaterThan(toPostgres(base, t))
+      // No further restart event.
+      for (let t = TE + 1; t <= UNTIL; t++) expect(eventsAt(acted, t)).toEqual([])
+    }
+  })
+
+  it('a second restart ends the first induced cold start and starts a new one: one set of events per restart', () => {
+    const sim = createSimulation(shop('cache-twice'))
+    sim.advance(3)
+    sim.act({ kind: 'restart', target: 'redis' })
+    sim.advance(5)
+    sim.act({ kind: 'restart', target: 'redis' })
+    sim.advance(3)
+    expect(sim.telemetry().eventsIn(0, 11)).toEqual([...coldStartEvents('redis', 4), ...coldStartEvents('redis', 9)])
+  })
+})
+
+describe('replaceProcess (ADR-012 §4): reactions in the life cycle, faults not yet started untouched', () => {
+  const root = createRngFactory('sp')
+  const ctx = (lifecycle: ReturnType<typeof createFaultLifecycle>, tick: number) => ({ tick, world, lifecycle })
+
+  it('clear ends in te, reset adds generation 1 from te, none leaves the fault, future faults are untouched', () => {
+    const faults = resolveFaults(
+      [
+        { kind: 'service_crash_loop', target: 'cart', startTick: 2 },
+        { kind: 'connection_pool_exhaustion', target: 'cart', startTick: 3 },
+        { kind: 'bad_deploy', target: 'cart', startTick: 4 },
+        { kind: 'slow_dependency', target: 'cart', startTick: 50 },
+      ],
+      world,
+    )
+    const lifecycle = createFaultLifecycle(faults, world, root, faultRegistry)
+    expect(replaceProcess('cart', 0, ctx(lifecycle, 10))).toBe(false)
+    const [crash, pool, deploy, future] = lifecycle.entries
+    expect(crash?.active.endTick).toBe(10)
+    expect(pool?.active.endTick).toBe(10)
+    expect(deploy?.active.endTick).toBeUndefined()
+    expect(future?.active.endTick).toBeUndefined()
+    expect(lifecycle.entries.length).toBe(5)
+    const gen1 = lifecycle.entries[4]
+    expect(gen1?.fault).toEqual({ ...faults[1], startTick: 10 })
+    expect(gen1?.origin).toEqual(['fault', 1, 'connection_pool_exhaustion'])
+    expect(gen1?.generation).toBe(1)
+    expect(lifecycle.activeOn('cart', 10)).toEqual([deploy, gen1])
+  })
+
+  it('on a cache: the active cache_cold_start is ended (not reset) and one is induced; other faults on it react by their row', () => {
+    const faults = resolveFaults(
+      [
+        { kind: 'cache_cold_start', target: 'redis', startTick: 2 },
+        { kind: 'slow_dependency', target: 'redis', startTick: 2 },
+      ],
+      world,
+    )
+    const lifecycle = createFaultLifecycle(faults, world, root, faultRegistry)
+    expect(replaceProcess('redis', 4, ctx(lifecycle, 8))).toBe(true)
+    expect(lifecycle.entries.map((e) => [e.fault.kind, e.origin, e.generation, e.active.startTick, e.active.endTick])).toEqual([
+      ['cache_cold_start', ['fault', 0, 'cache_cold_start'], 0, 2, 8],
+      ['slow_dependency', ['fault', 1, 'slow_dependency'], 0, 2, 8],
+      ['cache_cold_start', ['action', 4, 'cache_cold_start'], 0, 8, undefined],
+    ])
+  })
+})
+
+describe('streams of the reacted faults through the simulation (ADR-012 §6)', () => {
+  /** The real modules, recording the fault, a probe draw of its stream and the hooks they return. */
+  function probing(seed: string) {
+    const root = createRngFactory(seed)
+    const seen: { fault: Fault; probe: number; hooks: ReturnType<FaultModule['activate']> }[] = []
+    const registry = Object.fromEntries(
+      faultKinds.map((kind) => {
+        const real = faultRegistry[kind] as FaultModule
+        const module: FaultModule = {
+          kind,
+          activate: (fault, w, rng) => {
+            const hooks = real.activate(fault, w, rng)
+            seen.push({ fault, probe: rng('probe').next(), hooks })
+            return hooks
+          },
+        }
+        return [kind, module]
+      }),
+    ) as unknown as FaultRegistry
+    return { root, seen, registry }
+  }
+
+  it("pool reset: generation g >= 1 uses ('fault', i, kind, 'gen', g); its leak in te is leakPerTick", () => {
+    const seed = 'streams-pool'
+    const { root, seen, registry } = probing(seed)
+    const kind = 'connection_pool_exhaustion'
+    const faults = faultsOf(seed, { kind: 'cache_cold_start', startTick: 1 }, { kind, startTick: 2 })
+    const sim = createSimulationWith(shop(seed, { faults }), { registry })
+    sim.advance(6)
+    sim.act({ kind: 'restart', target: 'payment' })
+    sim.advance(4)
+    sim.act({ kind: 'restart', target: 'payment' })
+    sim.advance(1)
+    expect(seen.map((s) => [s.fault.kind, s.fault.startTick])).toEqual([
+      ['cache_cold_start', 1],
+      [kind, 2],
+      [kind, 7],
+      [kind, 11],
+    ])
+    expect(seen[2]?.probe).toBe(root('fault', 1, kind, 'gen', 1, 'probe').next())
+    expect(seen[3]?.probe).toBe(root('fault', 1, kind, 'gen', 2, 'probe').next())
+    const leakPerTick = (faults[1] as Fault).params['leakPerTick']
+    expect(seen[2]?.hooks.onResources?.({ tick: 7, component: 'payment', instance: 'payment-0' })?.connectionsAdd).toBe(leakPerTick)
+  })
+
+  it("cache rule: the induced cache_cold_start uses ('action', n, 'cache_cold_start'), n = sequence number of the action", () => {
+    const seed = 'streams-cache'
+    const { root, seen, registry } = probing(seed)
+    const sim = createSimulationWith(shop(seed), { registry })
+    sim.advance(2)
+    sim.act({ kind: 'restart', target: 'cart' }) // seq 0
+    sim.act({ kind: 'rollback', target: 'cart' }) // seq 1
+    sim.act({ kind: 'restart', target: 'redis' }) // seq 2
+    sim.advance(3)
+    expect(seen.map((s) => [s.fault.kind, s.fault.target, s.fault.startTick])).toEqual([['cache_cold_start', 'redis', 3]])
+    expect(seen[0]?.probe).toBe(root('action', 2, 'cache_cold_start', 'probe').next())
+  })
+})
+
+describe('DET with reactions: same seed + same act/advance sequence => identical NDJSON', () => {
+  it.each(faultKinds)('%s: restart of its target twice, two runs, same SHA-256', (kind) => {
+    for (const seed of ['det-r-1', 'det-r-2', 'det-r-3']) {
+      const target = targetOf(kind)
+      const steps: Step[] = [
+        { advance: 8 },
+        { act: { kind: 'restart', target } },
+        { advance: 4 },
+        { act: { kind: 'restart', target } },
+        { act: { kind: 'restart', target: 'redis' } },
+        { advance: 10 },
+      ]
+      const faults = faultsOf(seed, { kind, startTick: 5 })
+      expect(sha(run(shop(seed, { faults }), steps))).toBe(sha(run(shop(seed, { faults }), steps)))
+    }
   })
 })
