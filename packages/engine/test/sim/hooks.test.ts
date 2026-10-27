@@ -188,6 +188,41 @@ describe('hooksActiveAt — gating by startTick (F-2)', () => {
   })
 })
 
+describe('hooksActiveAt — endTick (ADR-012 §6, T2.2)', () => {
+  const ended = { startTick: 10, endTick: 14, hooks: { onServe: () => ({ addLatencyMs: 100 }) } }
+  const open = { startTick: 0, hooks: { onServe: () => ({ addLatencyMs: 1 }) } }
+
+  it('a fault applies in [startTick, endTick): present up to endTick - 1, absent from endTick on', () => {
+    expect(hooksActiveAt([ended], 9)).toEqual({})
+    expect(hooksActiveAt([ended], 10).onServe?.(serveCtx)).toEqual({ addLatencyMs: 100 })
+    expect(hooksActiveAt([ended], 13).onServe?.(serveCtx)).toEqual({ addLatencyMs: 100 })
+    expect(hooksActiveAt([ended], 14)).toEqual({})
+    expect(hooksActiveAt([ended], 1000)).toEqual({})
+  })
+
+  it('endTick undefined = never ends (phase-1 gating)', () => {
+    expect(hooksActiveAt([open], 1_000_000).onServe?.(serveCtx)).toEqual({ addLatencyMs: 1 })
+  })
+
+  it('endTick = startTick: the fault never applies and is never called', () => {
+    const spy = vi.fn(() => undefined)
+    const hooks = hooksActiveAt([{ startTick: 5, endTick: 5, hooks: { onTick: spy } }], 5)
+    expect(hooks).toEqual({})
+    expect(spy).not.toHaveBeenCalled()
+  })
+
+  it('an ended fault drops out of the composition and the others keep composing', () => {
+    expect(hooksActiveAt([open, ended], 12).onServe?.(serveCtx)).toEqual({ addLatencyMs: 101 })
+    expect(hooksActiveAt([open, ended], 14).onServe?.(serveCtx)).toEqual({ addLatencyMs: 1 })
+  })
+
+  it('an ended fault is never called after its endTick', () => {
+    const spy = vi.fn(() => undefined)
+    hooksActiveAt([{ startTick: 0, endTick: 3, hooks: { onTick: spy } }], 3).onTick?.(tickCtx)
+    expect(spy).not.toHaveBeenCalled()
+  })
+})
+
 describe('faultRngFactory / activateFaults (ADR-003 §2)', () => {
   const root = createRngFactory('hooks')
   const seq = (f: RngFactory, ...key: (string | number)[]) => {
