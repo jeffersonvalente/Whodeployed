@@ -96,6 +96,8 @@ export type { EngineErrorCode, EngineErrorInfo } from './types.js'
 // Runtime values
 export { createSimulation, simulate } from './sim/simulation.js'
 export { serializeRecord, toNdjson } from './sim/serialize.js'
+// Phase 2 (T2.6): impact function, ADR-013
+export { accumulatedImpact, impactOfTick } from './sim/impact.js'
 export { faultCatalog, faultKinds } from './faults/catalog.js'
 export { resolveFaults } from './faults/resolve.js'
 export { EngineError, isEngineError } from './errors.js'
