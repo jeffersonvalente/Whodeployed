@@ -61,7 +61,10 @@ export interface Answer {
   tickCost: number
 }
 
-/** Part of the contract since phase 1; its effect on the simulation is out of scope until phase 2. */
+/**
+ * Part of the contract since phase 1. Phase 2 gives semantics to 'restart' and 'rollback' only
+ * (ADR-012, applied through Simulation.act); every other kind throws EngineError 'unsupported_action'.
+ */
 export type Action = {
   kind: 'restart' | 'rollback' | 'flagOff' | 'scale' | 'escalate' | 'declareMitigated'
   target?: string
@@ -403,7 +406,12 @@ export type TickCostTable = { readonly [K in QuestionKind]: number }
 export interface SimulationConfig {
   system: SystemDefinition
   seed: string
-  /** Already resolved faults (see ResolveFaults). Several at once are allowed (F-6). */
+  /**
+   * Resolved or resolvable faults. createSimulation always re-validates them with resolveFaults,
+   * so invalid input (e.g. read from scenario YAML) throws the same EngineError as F-7, and an
+   * already resolved Fault comes back unchanged (ADR-002 Emenda 2, I24-2). Several at once are
+   * allowed (F-6).
+   */
   faults?: readonly Fault[]
   noise?: readonly NoiseEvent[]
 }
@@ -436,12 +444,61 @@ export interface TelemetryView {
 export interface Simulation {
   /** Snapshot of the world; `tick` is the last simulated tick. */
   readonly world: World
-  /** Simulates the next `ticks` ticks (default 1) and returns only their records. */
+  /**
+   * Simulates the next `ticks` ticks (default 1) and returns only their records.
+   * `ticks` is an integer in 0..100000 (MAX_TICKS); otherwise EngineError 'invalid_ticks' (ADR-002 Emenda 2, I24-3).
+   */
   advance(ticks?: number): TelemetryRecord[]
   /** Pure read against the current tick; never changes telemetry (Q-3). Throws EngineError (Q-10). */
   ask(question: Question): Answer
+  /**
+   * Applies an Action (ADR-012). Validates it against the world, schedules its effect for tick
+   * `world.tick + 1` and returns its cost; like ask(), it never advances the clock (the caller
+   * advances by `tickCost`). Actions applied before the same advance() take effect in call order.
+   * Same seed + same questions and actions at the same ticks => byte-identical telemetry (EN-4).
+   * Throws EngineError 'invalid_action', 'unknown_target' or 'unsupported_action' (EN-5).
+   */
+  act(action: Action): ActionResult
   telemetry(): TelemetryView
 }
+
+/** Action kinds with semantics in phase 2 (ADR-012). The other kinds of Action are 'unsupported_action'. */
+export type SupportedActionKind = Extract<Action['kind'], 'restart' | 'rollback'>
+
+/** Published in ADR-012 (EN-4): tick cost of each supported action, integer >= 1. */
+export type ActionCostTable = { readonly [K in SupportedActionKind]: number }
+
+/**
+ * Returned by Simulation.act. Deliberately carries no information about what the action changed
+ * (e.g. whether a rollback found a deploy to revert): the player learns it from the signals (SPEC §3.4).
+ */
+export interface ActionResult {
+  /** Validated copy of the action, keys in contract order (kind, target). */
+  action: Action
+  /** world.tick when act() was called; the effect starts at tick + 1 (ADR-012). */
+  tick: number
+  tickCost: number
+}
+
+/**
+ * User impact of one tick (ADR-013): a pure function of the telemetry of that tick plus the
+ * world's ingress definition. Knows nothing about scenarios (EN-6, SPEC §3.3).
+ */
+export interface ImpactTick {
+  tick: number
+  /** Requests expected at the entry services in the tick (sum of IngressSpec.ratePerTick). */
+  expected: number
+  /** Expected requests that were lost at the edge, failed, or were slower than the threshold. */
+  bad: number
+  /** bad / expected >= the threshold of ADR-013. Counts 1 towards the accumulated impact. */
+  impacted: boolean
+}
+
+/** Impact of tick `tick` of `view` (0 <= tick <= view.now). Throws EngineError 'invalid_ticks' outside. */
+export type ImpactOfTick = (view: TelemetryView, tick: number) => ImpactTick
+
+/** Number of impacted ticks in [0, upTo] (0 <= upTo <= view.now). The game's "impact" counter (EN-6). */
+export type AccumulatedImpact = (view: TelemetryView, upTo: number) => number
 
 /** Creates the simulation and simulates tick 0. Throws EngineError on invalid config. */
 export type CreateSimulation = (config: SimulationConfig) => Simulation
@@ -474,6 +531,10 @@ export type EngineErrorCode =
   | 'invalid_filter'
   | 'invalid_role'
   | 'invalid_question'
+  /** Action that is not an object, has an unknown kind, a missing/non-string target or an extra key (ADR-012). */
+  | 'invalid_action'
+  /** Known Action kind without semantics in this phase: flagOff, scale, escalate, declareMitigated (ADR-012, EN-5). */
+  | 'unsupported_action'
   | 'usage'
 
 export interface EngineErrorInfo {
@@ -601,6 +662,27 @@ export interface FaultModule<K extends FaultKind = FaultKind> {
 }
 
 export type FaultRegistry = { readonly [K in FaultKind]: FaultModule<K> }
+
+/**
+ * What happens to an active fault when the processes of its target are replaced, i.e. on a
+ * restart of the target, or on a rollback of the target that finds a deploy to revert (ADR-012):
+ *   clear  the fault's hooks stop being invoked from the effect tick on;
+ *   reset  the fault is re-activated with startTick = effect tick (its state starts over);
+ *   none   the fault is unaffected.
+ */
+export type ProcessReplacementReaction = 'clear' | 'reset' | 'none'
+
+export interface FaultActionReaction {
+  onProcessReplacement: ProcessReplacementReaction
+  /**
+   * true when the fault is bound to the deploy events it emits (bad_deploy): a rollback that
+   * reverts that deploy batch clears the fault, whatever onProcessReplacement says.
+   */
+  revertedByRollback: boolean
+}
+
+/** Data table of ADR-012, one row per FaultKind (src/sim/actions.ts). */
+export type FaultActionReactions = { readonly [K in FaultKind]: FaultActionReaction }
 
 /** Detail of an error span, consumed by log generation (P-3). */
 export interface ErrorDetail {
