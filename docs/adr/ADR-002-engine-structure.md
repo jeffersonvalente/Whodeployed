@@ -142,3 +142,46 @@ Registros entregues à store e o `World` exposto são imutáveis (ADR-010). O or
 - `EngineError` (com `EngineErrorCode`) é **só** para entrada vinda de fora do motor: `SystemDefinition`, seed, `FaultInput`, `NoiseEvent`, `Question`, argv do CLI. É o que o CLI mapeia para exit 2 (ADR-007).
 - Violação de invariante entre módulos do motor (ex.: `appendTick` fora de ordem, `ErrorDetail` ausente ou órfão, tick negativo vindo do orquestrador) é bug, não entrada inválida: lança `Error` ou `RangeError` nativo, com mensagem prefixada pelo módulo (`TelemetryStore: ...`). Não ganha `EngineErrorCode`. O CLI trata como erro interno (exit 1).
 - O que já está em `main` (T1.2, T1.7, T1.8) segue esta regra; nada a mudar.
+
+## Emenda 2 — 2026-10-26 (fase 2; issue #24 itens 1, 2, 3 e 5; PRD FASE-2 I24-1..I24-4)
+
+Registra o que a fase 2 consome e acrescenta. Os itens 2.1–2.3 só registram o comportamento de `main` em `4fe9dce`; o item 2.4 decide uma mudança (tarefa T2.1).
+
+### 2.1 API pública de `src/index.ts` (I24-1; contrato SemVer a partir de `engine-v0.1.0`)
+
+Exportações de **runtime** (a lista que o teste da T2.1 compara com `Object.keys(await import('../src/index.js'))`; a tabela está na ordem que `Object.keys` devolve para um namespace ESM, por code unit, maiúsculas antes de minúsculas, e o teste compara nessa ordem):
+
+| Nome | Desde | Origem |
+| --- | --- | --- |
+| `EngineError` | 0.1.0 | `errors.ts` |
+| `accumulatedImpact` | fase 2 (T2.6) | `sim/impact.ts`, ADR-013 |
+| `createSimulation` | 0.1.0 | `sim/simulation.ts` |
+| `defaultShop` | 0.1.0 | `world/default-shop.ts` |
+| `faultCatalog` | 0.1.0 | `faults/catalog.ts` |
+| `faultKinds` | 0.1.0 | `faults/catalog.ts` |
+| `impactOfTick` | fase 2 (T2.6) | `sim/impact.ts`, ADR-013 |
+| `isEngineError` | 0.1.0 | `errors.ts` |
+| `resolveFaults` | 0.1.0 | `faults/resolve.ts` |
+| `serializeRecord` | 0.1.0 | `sim/serialize.ts` |
+| `simulate` | 0.1.0 | `sim/simulation.ts` |
+| `toNdjson` | 0.1.0 | `sim/serialize.ts` |
+
+Exportações de **tipo**: as seções 1 a 7 de `types.ts`, nomeadas em `index.ts` (seção 1: `World`, `Fault`, `Question`, `Answer`, `Action`; seções 2 a 7 como estão em `index.ts`), mais, desde a fase 2, `SupportedActionKind`, `ActionCostTable`, `ActionResult`, `ImpactTick`, `ImpactOfTick` e `AccumulatedImpact` (ADR-012, ADR-013). As seções 8 (SPI interna) e 9 (CLI) continuam privadas. O método `Simulation.act` (ADR-012) entra pela interface `Simulation`, que já é pública.
+
+Regra: acrescentar nome é mudança *minor*; remover ou mudar assinatura é *major* e pede emenda desta seção. Quem acrescenta uma exportação atualiza esta tabela e o teste no mesmo PR.
+
+### 2.2 `createSimulation` revalida `faults` (I24-2)
+
+`createSimulation` passa `config.faults` por `resolveFaults` mesmo quando já resolvidos: para `Fault` válido é identidade (o QA da T1.15 conferiu, e `resolveFaults` é idempotente sobre a própria saída, inclusive depois da T1.30 com `null`); para entrada inválida, lança o `EngineError` de F-7. É o comportamento desejado: o loader de cenários (ADR-014) entrega `faults` vindos de YAML e conta com esse erro. O comentário de `SimulationConfig.faults` em `types.ts` passou a dizer "resolved or resolvable" (2026-10-26, PR do `FASE-2.tasks.md`).
+
+### 2.3 Limite de ticks da biblioteca (I24-3)
+
+`MAX_TICKS = 100000` (`src/sim/simulation.ts`), o mesmo do CLI (ADR-007). `advance(n)` aceita inteiro em `0..100000`; `simulate(config, n)` aceita inteiro em `1..100000`. Fora disso: `EngineError` com `code: 'invalid_ticks'`, `field: 'ticks'`, `validValues: ['<min>..100000']`. `impactOfTick`/`accumulatedImpact` usam o mesmo código para tick fora de `[0, now]` (ADR-013). O limite é de validação, não de memória: a biblioteca guarda toda a telemetria em memória (ADR-010), e o protótipo nunca passa de 360 ticks (PRD FASE-2 PR-8). O estouro de memória do CLI com `--ticks` alto (#24 item 8) continua fora da fase 2 (PRD).
+
+### 2.4 Ciclo ESM `questions/ask.ts` ↔ `sim/simulation.ts` (I24-4): remover
+
+Decisão: **remover o ciclo**, não só registrar a regra. A fase 2 empacota o motor num bundle de navegador (Vite/Rollup), onde a ordem de avaliação de um ciclo depende do bundler e um uso de nível de módulo vira TDZ em runtime, não em teste.
+
+- `AskEnvironment` (interno, `src/questions/ask.ts`) ganha `createLastWeek: (config: SimulationConfig) => Simulation`. O orquestrador passa `createSimulation` ao montar o ambiente. `ask.ts` deixa de importar `sim/simulation.ts`.
+- O comportamento de `lastWeek` (ADR-006 Emenda 1: memoizado por ambiente, avançado até `now`) não muda; os testes de `ask` continuam iguais.
+- Regra nova, verificada por teste em `test/boundaries.test.ts`: o grafo de imports relativos de `src/` (exceto `import type`) não tem ciclo.

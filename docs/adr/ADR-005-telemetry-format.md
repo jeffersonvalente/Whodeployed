@@ -123,3 +123,10 @@ Nada disso pode encolher pelos meios normais: D-3 exige ≥ 60 ticks; o formato 
 - **Repositório público:** cada regeneração de fixtures adiciona ao histórico aproximadamente o tamanho comprimido dos arquivos alterados (dezenas a centenas de KB por PR). Aceitável; esta ADR já exige que o PR explique o diff.
 - **UI (fases 2–3):** os fixtures servem a desenvolvimento e testes. O build de produção do site não empacota os 7 NDJSON no bundle JavaScript. Se uma tela precisar de um deles no ar, carrega por `fetch` de arquivo estático (o GitHub Pages comprime no transporte) ou usa a biblioteca do motor no browser. A decisão concreta é do Arquiteto da fase em que a UI existir.
 - **T1.27:** o critério de tamanho passa a ser 3 MiB e a tarefa ganha o `.gitattributes`. As dependências não mudam: os NDJSON de `disk_full` e `connection_pool_exhaustion` continuam esperando T1.36 e T1.37.
+
+## Emenda 3 — 2026-10-26 (fase 2: ações, ADR-012)
+
+- **Ordem dos eventos no tick:** (1a) eventos de falha, na ordem das falhas (as falhas induzidas e as gerações `g ≥ 1` da ADR-012 entram depois das falhas da configuração, na ordem em que foram criadas); (1b) eventos de ação (`restart`: `config` com `restart: true`; `rollback`: `deploy`), na ordem em que `act()` foi chamado; (1c) eventos de noise, na ordem de entrada. O resto da ordem (spans, logs, métricas) não muda.
+- Eventos de ação têm `target` e não têm `instance` nem `note`. O motor não marca a origem do evento (falha, ação ou noise), como já vale para `whatChanged` (ADR-006).
+- Nenhuma mensagem de log nova: o `restart` usa o mecanismo de instância `down` (`connection refused` no chamador, ADR-002 §5) e não emite log próprio. O vocabulário fechado da Emenda 1 continua o mesmo.
+- Sem ação, nada muda: os 7 NDJSON de `fixtures/` ficam byte-idênticos (PRD FASE-2 EN-2). Fixtures de ação e de impacto ficam em `fixtures/actions/` e `fixtures/impact/` (JSON, tarefa T2.8), fora da contagem `fixtures/*.ndjson` de D-3.

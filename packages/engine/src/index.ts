@@ -81,6 +81,13 @@ export type {
   CreateSimulation,
   Simulate,
   SerializeRecord,
+  // Phase 2 (ADR-012, ADR-013; list in ADR-002 Emenda 2)
+  SupportedActionKind,
+  ActionCostTable,
+  ActionResult,
+  ImpactTick,
+  ImpactOfTick,
+  AccumulatedImpact,
 } from './types.js'
 
 // 7. Errors

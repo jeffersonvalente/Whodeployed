@@ -218,6 +218,10 @@ export function createSimulationWith(config: SimulationConfig, options: Simulati
       return out
     },
     ask: (question) => ask(question, env),
+    // Interface stub (ADR-012): the body is task T2.2 (docs/prd/FASE-2.tasks.md).
+    act: () => {
+      throw new Error('Simulation.act: not implemented yet (T2.2)')
+    },
     telemetry: () => view,
   }
 }
