@@ -5,13 +5,16 @@
  * every random draw comes from the RngFactory of `config.seed` (SPEC §3.3, §3.6).
  *
  * Per tick `t`, in this order (ADR-002 §3):
- *   1. onTick of the faults active in `t` (startTick-gated, F-2) -> down set, fault events, fault logs;
- *   2. noise events with tick = t (S-4: noise only ever produces EventRecords);
+ *   1. effects of the actions scheduled for `t` (act() at tick t - 1, in call order, ADR-012), then
+ *      onTick of the faults active in `t` (startTick <= t < endTick, F-2) -> down set (faults', then
+ *      the actions'), fault events, fault logs;
+ *   2. events of the actions, then noise events with tick = t (ADR-005 Emenda 3; S-4: noise only
+ *      ever produces EventRecords);
  *   3. generateTraffic with the root factory and the composed hooks;
  *   4. onResources for every instance, in world order;
  *   5. deriveMetrics;
  *   6. generateLogs (fault logs first, then request logs);
- *   7. records in canonical order (ADR-005): events (fault, then noise), spans, logs, metrics;
+ *   7. records in canonical order (ADR-005): events (fault, action, noise), spans, logs, metrics;
  *      then store.appendTick.
  *
  * Nothing here names a concrete component: the system is input data (W-3). Records are never
@@ -22,6 +25,8 @@ import { faultRegistry } from '../faults/registry.js'
 import { resolveFaults } from '../faults/resolve.js'
 import { ask, type AskEnvironment } from '../questions/ask.js'
 import type {
+  Action,
+  ActionResult,
   ChangeKind,
   CreateSimulation,
   EventRecord,
@@ -39,7 +44,8 @@ import type {
   World,
 } from '../types.js'
 import { buildWorld, validateSystem } from '../world/build.js'
-import { activateFaults, hooksActiveAt } from './hooks.js'
+import { actionCostTable, actionEffect, createFaultLifecycle, validateAction, type ScheduledAction } from './actions.js'
+import { hooksActiveAt } from './hooks.js'
 import { deriveMetrics } from './metrics.js'
 import { generateLogs } from './logs.js'
 import { createRngFactory } from './rng.js'
@@ -145,7 +151,12 @@ export function createSimulationWith(config: SimulationConfig, options: Simulati
   const frozenConfig: SimulationConfig = Object.freeze({ system, seed, faults, noise })
 
   const rng = createRngFactory(seed)
-  const active = activateFaults(faults, snapshotAt(0), rng, options.registry ?? faultRegistry)
+  // Generation 0 of each fault is activated as in phase 1 (EN-2); actions add generations and
+  // induced faults to the same life cycle (ADR-012 §6).
+  const lifecycle = createFaultLifecycle(faults, snapshotAt(0), rng, options.registry ?? faultRegistry)
+  /** Accepted actions whose effect tick has not been simulated yet, in call order. */
+  const scheduled: ScheduledAction[] = []
+  let actionSeq = 0
   const instances = [...services, ...deps].flatMap((c) => c.instances.map((instance) => ({ component: c.name, instance })))
 
   let world = snapshotAt(0)
@@ -169,14 +180,21 @@ export function createSimulationWith(config: SimulationConfig, options: Simulati
 
   const step = (tick: number): TelemetryRecord[] => {
     const tickWorld = snapshotAt(tick)
-    const hooks = hooksActiveAt(active, tick)
 
-    // 1. Fault tick effects.
+    // 1. Action effects (they may end or add faults from this tick on), then fault tick effects.
+    const actionEffects: TickEffect[] = []
+    while (scheduled.length > 0 && (scheduled[0] as ScheduledAction).effectTick === tick) {
+      const next = scheduled.shift() as ScheduledAction
+      actionEffects.push(actionEffect(next, { tick, world: tickWorld, lifecycle }))
+    }
+    const hooks = hooksActiveAt(lifecycle.active, tick)
     const effect: TickEffect = hooks.onTick?.({ tick, world: tickWorld }) ?? {}
     const down = new Set<InstanceId>(effect.down ?? [])
+    for (const a of actionEffects) for (const instance of a.down ?? []) down.add(instance)
 
-    // 2. Events: fault events in fault order, then noise in input order.
+    // 2. Events: fault events in fault order, action events in call order, then noise in input order.
     const events: EventRecord[] = (effect.events ?? []).map((e) => eventRecord(tick, e))
+    for (const a of actionEffects) for (const e of a.events ?? []) events.push(eventRecord(tick, e))
     for (const n of noise) if (n.tick === tick) events.push(eventRecord(tick, n))
 
     // 3. Traffic.
@@ -218,9 +236,12 @@ export function createSimulationWith(config: SimulationConfig, options: Simulati
       return out
     },
     ask: (question) => ask(question, env),
-    // Interface stub (ADR-012): the body is task T2.2 (docs/prd/FASE-2.tasks.md).
-    act: () => {
-      throw new Error('Simulation.act: not implemented yet (T2.2)')
+    act(action: Action): ActionResult {
+      // Validation throws before anything is scheduled: an invalid action leaves the run untouched.
+      const valid = validateAction(action, world)
+      scheduled.push(Object.freeze({ action: valid, effectTick: world.tick + 1, seq: actionSeq }))
+      actionSeq += 1
+      return Object.freeze({ action: valid, tick: world.tick, tickCost: actionCostTable[valid.kind] })
     },
     telemetry: () => view,
   }

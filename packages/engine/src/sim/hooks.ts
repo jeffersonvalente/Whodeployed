@@ -1,8 +1,9 @@
 /**
- * Composition and gating of FaultHooks (ADR-002 §3 "Gating", §4; ADR-003 §2).
+ * Composition and gating of FaultHooks (ADR-002 §3 "Gating", §4; ADR-003 §2; ADR-012 §6).
  *
  * Gating (F-2): a fault's hooks are only part of the composition of tick `t` when
- * `t >= fault.startTick`. Before that the fault is not called at all, so it can neither change
+ * `startTick <= t < endTick` (`endTick` is undefined unless an action ended the fault, ADR-012 §6,
+ * so without actions the window is `t >= startTick`, as in phase 1). Before that the fault is not called at all, so it can neither change
  * telemetry nor consume randomness; together with the per-key streams of ADR-003 this keeps every
  * record before `startTick` byte-identical to the baseline.
  *
@@ -37,9 +38,11 @@ import type {
   World,
 } from '../types.js'
 
-/** Hooks of one fault, with the tick from which they apply. */
+/** Hooks of one fault, with the window of ticks [startTick, endTick) in which they apply. */
 export interface ActiveFault {
   startTick: number
+  /** First tick (exclusive end) in which the fault no longer applies; undefined = never ends (ADR-012 §6). */
+  endTick?: number
   hooks: FaultHooks
 }
 
@@ -66,10 +69,12 @@ export function activateFaults(
   })
 }
 
-/** Hooks of the faults active in `tick` (startTick-gated), composed (F-2, F-6). */
+/** Hooks of the faults active in `tick` (startTick <= tick < endTick), composed (F-2, F-6, ADR-012 §6). */
 export function hooksActiveAt(faults: readonly ActiveFault[], tick: number): FaultHooks {
   const active: FaultHooks[] = []
-  for (const fault of faults) if (tick >= fault.startTick) active.push(fault.hooks)
+  for (const fault of faults) {
+    if (tick >= fault.startTick && (fault.endTick === undefined || tick < fault.endTick)) active.push(fault.hooks)
+  }
   return composeHooks(active)
 }
 
