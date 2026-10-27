@@ -7,7 +7,8 @@ import { fileURLToPath } from 'node:url'
 import { EngineError, accumulatedImpact, createSimulation, defaultShop, resolveFaults } from '@whodeployed/engine'
 import { describe, expect, it } from 'vitest'
 import { parseDocument, stringify } from 'yaml'
-import { ScenarioError, parseScenario, toSimulationConfig } from '../src/index.js'
+import { ScenarioError, toSimulationConfig } from '../src/index.js'
+import { parseScenario } from '../src/node.js'
 import type { EngineRuntime, Scenario } from '../src/index.js'
 
 const engine: EngineRuntime = { resolveFaults, createSimulation, accumulatedImpact, systems: { 'default-shop': defaultShop } }
