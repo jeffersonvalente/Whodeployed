@@ -13,9 +13,9 @@ system: default-shop
 
 faults:
   - kind: bad_deploy
-    target: cart
+    target: catalog
     startTick: 18
-    params: { affectedInstances: 2, errorRatio: 1 }
+    params: { affectedInstances: 2, errorRatio: 0.9 }
 
 noise:
   # The decoy: the newest change in the whatChanged window, on a shared dependency.
@@ -37,12 +37,12 @@ impactBudget: 30
 
 referencePath:
   - { ask: whatChanged, window: 30 }
-  - { ask: compare, service: cart, metric: errorPct, by: instance }
-  - { act: rollback, target: cart }
+  - { ask: compare, service: catalog, metric: errorPct, by: instance }
+  - { act: rollback, target: catalog }
 
-rootCause: "A release rolled out to two of the three cart instances fails every request those instances serve."
+rootCause: "A release rolled out to two of the three catalog instances fails most of the requests those instances serve."
 
 review:
   redundant: ["dashboard gateway"]
-  keySignal: "Split by instance, cart errors come from the two instances deployed at tick 18; the third one is clean."
-  keySignalAsk: "compare cart"
+  keySignal: "Split by instance, catalog errors come from the two instances deployed at tick 18; the third one is clean."
+  keySignalAsk: "compare catalog"
