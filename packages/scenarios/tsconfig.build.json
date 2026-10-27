@@ -1,0 +1,14 @@
+{
+  "//": "Package build: emits dist/ from all of src/ (\".\" and \"./node\" entries). @types/node is on here only because src/node.ts is part of the emit; tsconfig.json keeps the rest of src/ free of Node APIs.",
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "rootDir": "src",
+    "outDir": "dist",
+    "declaration": true,
+    "sourceMap": false,
+    "types": ["node"]
+  },
+  "include": ["src"],
+  "exclude": []
+}

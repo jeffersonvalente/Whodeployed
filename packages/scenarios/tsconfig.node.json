@@ -1,0 +1,9 @@
+{
+  "//": "Node-side typecheck (ADR-008, ADR-014): src/node.ts (the \"./node\" entry, node:fs), test/, scripts/ and configs get @types/node. The browser-safe library is checked without it by tsconfig.json.",
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": ["node"]
+  },
+  "include": ["src/node.ts", "test", "scripts", "vitest.config.ts"],
+  "exclude": []
+}

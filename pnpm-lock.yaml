@@ -32,6 +32,27 @@ importers:
         specifier: ^2
         version: 2.1.9(@types/node@22.20.5)
 
+  packages/scenarios:
+    devDependencies:
+      '@types/node':
+        specifier: ^22
+        version: 22.20.5
+      '@whodeployed/engine':
+        specifier: workspace:*
+        version: link:../engine
+      eslint:
+        specifier: ^9
+        version: 9.39.5
+      typescript:
+        specifier: ~5.6
+        version: 5.6.3
+      typescript-eslint:
+        specifier: ^8
+        version: 8.72.0(eslint@9.39.5)(typescript@5.6.3)
+      vitest:
+        specifier: ^2
+        version: 2.1.9(@types/node@22.20.5)
+
 packages:
 
   '@ampproject/remapping@2.3.0':
