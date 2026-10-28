@@ -5,8 +5,9 @@
  * T2.3 — the reaction table FaultActionReactions (ADR-012 §5) applied by the process replacement of
  * `restart`, and the cache rule (induced cache_cold_start, ADR-012 §4).
  *
- * `rollback` with deploy history is T2.4; here a rollback is validated, costs its ticks and changes
- * nothing.
+ * T2.4 — `rollback`: deploy history read from the TelemetryView, most recent batch not yet
+ * reverted, binding to bad_deploy, process replacement without unavailability, one `deploy` event,
+ * no batch = nothing (ADR-012 §4–§6; PRD FASE-2 EN-4, EN-5, DET).
  */
 import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
@@ -24,6 +25,7 @@ import {
   actionEffect,
   createFaultLifecycle,
   faultActionReactions,
+  latestRevertibleBatch,
   replaceProcess,
   validateAction,
 } from '../../src/sim/actions.js'
@@ -33,6 +35,7 @@ import { toNdjson } from '../../src/sim/serialize.js'
 import { createSimulation, createSimulationWith } from '../../src/sim/simulation.js'
 import { buildWorld } from '../../src/world/build.js'
 import { defaultShop } from '../../src/world/default-shop.js'
+import { signatureSeeds } from '../support/signature.js'
 import type {
   Action,
   EventRecord,
@@ -45,6 +48,7 @@ import type {
   Simulation,
   SimulationConfig,
   TelemetryRecord,
+  TelemetryView,
 } from '../../src/types.js'
 
 const pkgDir = fileURLToPath(new URL('../..', import.meta.url))
@@ -348,7 +352,7 @@ describe('restart X (ADR-012 §4): every instance of X down at tick + 1 and one 
   })
 })
 
-describe('rollback in T2.2: validated, costed, no telemetry change (deploy history is T2.4)', () => {
+describe('rollback without any deploy in the run: validated, costed, no telemetry change', () => {
   it('a rollback on a target without deploys gives the same telemetry as not acting', () => {
     for (const target of NAMES) {
       const acted = run(shop('rb'), [{ advance: 4 }, { act: { kind: 'rollback', target } }, { advance: 5 }])
@@ -656,11 +660,13 @@ describe('createFaultLifecycle (ADR-012 §6)', () => {
 
 describe('actionEffect (ADR-012 §4)', () => {
   const lifecycle = createFaultLifecycle([], world, createRngFactory('effect'), faultRegistry)
+  /** A real view without any deploy event (the restart cases never read it). */
+  const view = createSimulation(shop('effect')).telemetry()
 
   it('restart: down = every instance of the target in world order; one config restart event', () => {
     // T2.3: caches are excluded; their restart effect is empty (cache rule, next test).
     for (const target of NON_CACHE) {
-      const effect = actionEffect({ action: { kind: 'restart', target }, effectTick: 1, seq: 0 }, { tick: 1, world, lifecycle })
+      const effect = actionEffect({ action: { kind: 'restart', target }, effectTick: 1, seq: 0 }, { tick: 1, world, lifecycle, view })
       expect(effect).toEqual({ down: instancesOf(target), events: [{ kind: 'config', target, restart: true }] })
     }
   })
@@ -668,7 +674,7 @@ describe('actionEffect (ADR-012 §4)', () => {
   it('restart of a cache: no down nor event of its own; a cache_cold_start is induced from te (cache rule)', () => {
     const own = createFaultLifecycle([], world, createRngFactory('effect-cache'), faultRegistry)
     for (const target of CACHES) {
-      const effect = actionEffect({ action: { kind: 'restart', target }, effectTick: 3, seq: 7 }, { tick: 3, world, lifecycle: own })
+      const effect = actionEffect({ action: { kind: 'restart', target }, effectTick: 3, seq: 7 }, { tick: 3, world, lifecycle: own, view })
       expect(effect).toEqual({})
       const induced = own.entries.at(-1)
       expect(induced?.fault).toMatchObject({ kind: 'cache_cold_start', target, startTick: 3 })
@@ -677,12 +683,13 @@ describe('actionEffect (ADR-012 §4)', () => {
     }
   })
 
-  it('rollback: no effect yet (T2.4)', () => {
-    expect(actionEffect({ action: { kind: 'rollback', target: 'cart' }, effectTick: 1, seq: 0 }, { tick: 1, world, lifecycle })).toEqual({})
+  it('rollback without a batch in the view: empty effect, no process replacement', () => {
+    expect(actionEffect({ action: { kind: 'rollback', target: 'cart' }, effectTick: 1, seq: 0 }, { tick: 1, world, lifecycle, view })).toEqual({})
+    expect(lifecycle.entries).toEqual([])
   })
 
   it('fails loudly on a target outside the world (validation is bypassed only by internal misuse)', () => {
-    expect(() => actionEffect({ action: { kind: 'restart', target: 'nope' }, effectTick: 1, seq: 0 }, { tick: 1, world, lifecycle })).toThrow(
+    expect(() => actionEffect({ action: { kind: 'restart', target: 'nope' }, effectTick: 1, seq: 0 }, { tick: 1, world, lifecycle, view })).toThrow(
       /not a component/,
     )
   })
@@ -975,6 +982,273 @@ describe('DET with reactions: same seed + same act/advance sequence => identical
       ]
       const faults = faultsOf(seed, { kind, startTick: 5 })
       expect(sha(run(shop(seed, { faults }), steps))).toBe(sha(run(shop(seed, { faults }), steps)))
+    }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// T2.4 — rollback (ADR-012 §4, §5 columns "rollback", §6)
+// ---------------------------------------------------------------------------
+
+/** Seeds of the T2.4 cells (R1: >= 10; ENGINE_QA_SEEDS replaces the list). */
+const ROLLBACK_SEEDS = signatureSeeds('rollback')
+/** Log message of a request served by the bad version (ADR-005 Emenda 1), written out. */
+const UNHANDLED = 'unhandled exception'
+/** Message of a crash-loop instance going down (ADR-005 Emenda 1), written out. */
+const EXITED = 'process exited'
+
+/** Runs `steps` and returns the simulation. */
+function sequence(config: SimulationConfig, steps: readonly Step[]): Simulation {
+  const sim = createSimulation(config)
+  for (const step of steps) {
+    if ('act' in step) sim.act(step.act)
+    else sim.advance(step.advance)
+  }
+  return sim
+}
+const rb = (target: string): { act: Action } => ({ act: { kind: 'rollback', target } })
+const logsWith = (sim: Simulation, component: string, message: string, fromTick: number, toTick: number) =>
+  sim.telemetry().logsOf(component, fromTick, toTick).filter((l) => l.message === message)
+const allLogsWith = (sim: Simulation, message: string, tick: number) => NAMES.flatMap((n) => logsWith(sim, n, message, tick, tick))
+const deployNoise = (target: string, tick: number, note?: string): NoiseEvent => ({
+  kind: 'deploy',
+  target,
+  tick,
+  ...(note !== undefined ? { note } : {}),
+})
+/** An instance is down in a tick when its metric is zeroed (ADR-002 §5: rps, cpu and connections = 0). */
+const isDownIn = (sim: Simulation, tick: number, instance: string): boolean => {
+  const metric = recordsAt(sim, tick).find((r) => r.type === 'metric' && r.instance === instance)
+  if (metric === undefined || metric.type !== 'metric') throw new Error(`no metric of ${instance} in ${tick}`)
+  return metric.rps === 0 && metric.cpu === 0 && metric.connections === 0
+}
+
+describe('rollback without a batch (ADR-012 §4): nothing in the telemetry', () => {
+  it('no deploy on the target (faults and deploys on others): byte-identical to not acting, every target, >= 10 seeds', () => {
+    for (const seed of ROLLBACK_SEEDS) {
+      const faults = faultsOf(seed, { kind: 'bad_deploy', target: 'cart', startTick: 3 })
+      const noise = [deployNoise('auth', 2, 'copy change')]
+      const plain = run(shop(seed, { faults, noise }), [{ advance: 12 }])
+      for (const target of NAMES.filter((n) => n !== 'cart' && n !== 'auth')) {
+        expect(run(shop(seed, { faults, noise }), [{ advance: 6 }, rb(target), { advance: 6 }])).toBe(plain)
+      }
+    }
+  })
+
+  it('a deploy after world.tick of act() is not history: the rollback finds nothing (byte-identical to not acting)', () => {
+    for (const seed of ROLLBACK_SEEDS.slice(0, 3)) {
+      // act() at tick 6, te = 7: the bad_deploy's deploy events are in te itself, not in [0, 6].
+      const faults = faultsOf(seed, { kind: 'bad_deploy', target: 'cart', startTick: 7 })
+      const acted = run(shop(seed, { faults }), [{ advance: 6 }, rb('cart'), { advance: 6 }])
+      expect(acted).toBe(run(shop(seed, { faults }), [{ advance: 12 }]))
+    }
+  })
+
+  it('latestRevertibleBatch: undefined before tick 0 and without deploys of the target', () => {
+    const view = createSimulation(shop('lrb', { noise: [deployNoise('auth', 0)] })).telemetry()
+    expect(latestRevertibleBatch('auth', -1, view)).toBeUndefined()
+    expect(latestRevertibleBatch('cart', 0, view)).toBeUndefined()
+    expect(latestRevertibleBatch('auth', 0, view)).toBe(0)
+  })
+})
+
+describe('rollback of the bad_deploy batch (ADR-012 §5, "rollback no alvo"), >= 10 seeds', () => {
+  const target = targetOf('bad_deploy')
+
+  it('the fault ends in te = tick + 1: one deploy event without instance, no down, from te on the run without the fault', () => {
+    for (const seed of ROLLBACK_SEEDS) {
+      const faults = defaultFault(seed, 'bad_deploy')
+      const acted = sequence(shop(seed, { faults }), [{ advance: ACT_AT }, rb(target), { advance: UNTIL - ACT_AT }])
+      const withFault = plainRun(seed, faults)
+      const noFault = plainRun(seed, [])
+      // The fault really was there, before te and (without acting) after it: otherwise the cell proves nothing.
+      expect(logsWith(withFault, target, UNHANDLED, TE, UNTIL).length).toBeGreaterThan(0)
+      expect(logsWith(acted, target, UNHANDLED, START, ACT_AT).length).toBeGreaterThan(0)
+      // Ended in te: no request hits the bad version from te on.
+      expect(logsWith(acted, target, UNHANDLED, TE, UNTIL)).toEqual([])
+      expect(from(acted, TE + 1)).toBe(from(noFault, TE + 1))
+      // te: exactly one deploy event, no instance, no note, no config restart (rolling).
+      expect(eventsAt(acted, TE)).toEqual([{ type: 'event', tick: TE, kind: 'deploy', target }])
+      // te itself carries the traffic of the run without the fault: no down, only the event differs.
+      const noEvents = (sim: Simulation) => toNdjson(recordsAt(sim, TE).filter((r) => r.type !== 'event'))
+      expect(noEvents(acted)).toBe(noEvents(noFault))
+      expect(allLogsWith(acted, 'connection refused', TE)).toEqual([])
+      for (const instance of instancesOf(target)) expect(isDownIn(acted, TE, instance)).toBe(false)
+    }
+  })
+
+  it('indirect signal (SPEC §3.4): the caller sees the bad catalog; rolling back the caller changes nothing, rolling back catalog clears the caller too', () => {
+    for (const seed of ROLLBACK_SEEDS) {
+      const faults = faultsOf(seed, { kind: 'bad_deploy', target: 'catalog', startTick: START })
+      const steps = (t: string): Step[] => [{ advance: ACT_AT }, rb(t), { advance: UNTIL - ACT_AT }]
+      const gateway = (sim: Simulation) =>
+        toNdjson(sim.telemetry().all().filter((r) => r.tick > TE && 'component' in r && r.component === 'gateway'))
+      const withFault = plainRun(seed, faults)
+      const noFault = plainRun(seed, [])
+      // The caller's telemetry carries the fault (retried failed attempts) without acting.
+      expect(gateway(withFault)).not.toBe(gateway(noFault))
+      // Rolling back the one who shows the symptom (gateway, no deploy there) changes nothing.
+      expect(run(shop(seed, { faults }), steps('gateway'))).toBe(toNdjson(withFault.telemetry().all()))
+      // Rolling back the culprit: the caller's view equals the one without the fault.
+      expect(gateway(sequence(shop(seed, { faults }), steps('catalog')))).toBe(gateway(noFault))
+    }
+  })
+
+  it('a deploy noise on the target after the bad_deploy: the 1st rollback does not resolve, the 2nd does', () => {
+    for (const seed of ROLLBACK_SEEDS) {
+      const faults = defaultFault(seed, 'bad_deploy')
+      const noise = [deployNoise(target, START + 2, 'harmless copy change')]
+      const sim = sequence(shop(seed, { faults, noise }), [{ advance: ACT_AT }, rb(target), { advance: 4 }, rb(target), { advance: 8 }])
+      const te1 = TE
+      const te2 = ACT_AT + 4 + 1
+      // 1st rollback reverts the noise batch: the bad version keeps failing requests after te1.
+      expect(eventsAt(sim, te1)).toEqual([{ type: 'event', tick: te1, kind: 'deploy', target }])
+      expect(logsWith(sim, target, UNHANDLED, te1, te2 - 1).length).toBeGreaterThan(0)
+      // 2nd rollback reverts the batch of the fault: nothing fails from te2 on.
+      expect(eventsAt(sim, te2)).toEqual([{ type: 'event', tick: te2, kind: 'deploy', target }])
+      expect(logsWith(sim, target, UNHANDLED, te2, sim.world.tick)).toEqual([])
+    }
+  })
+
+  it('the deploy events of rollbacks are not revertible: once every batch is reverted, a rollback is byte-identical to not acting', () => {
+    for (const seed of ROLLBACK_SEEDS) {
+      const config = shop(seed, { faults: defaultFault(seed, 'bad_deploy'), noise: [deployNoise(target, START + 2)] })
+      const base: Step[] = [{ advance: ACT_AT }, rb(target), { advance: 3 }, rb(target), { advance: 3 }]
+      expect(run(config, [...base, rb(target), { advance: 4 }])).toBe(run(config, [...base, { advance: 4 }]))
+      // Same with only the fault's batch: the 2nd rollback finds the 1st rollback's deploy only.
+      const single = shop(seed, { faults: defaultFault(seed, 'bad_deploy') })
+      const once: Step[] = [{ advance: ACT_AT }, rb(target), { advance: 3 }]
+      expect(run(single, [...once, rb(target), { advance: 4 }])).toBe(run(single, [...once, { advance: 4 }]))
+    }
+  })
+
+  it('two rollbacks before the same advance: the 1st reverts the latest batch, the 2nd the previous one, one deploy event each', () => {
+    for (const seed of ROLLBACK_SEEDS.slice(0, 3)) {
+      // Fault batch at START + 2 after a noise batch at START: the 1st rollback reverts the fault.
+      const faults = faultsOf(seed, { kind: 'bad_deploy', target, startTick: START + 2 })
+      const both = sequence(shop(seed, { faults, noise: [deployNoise(target, START)] }), [{ advance: ACT_AT }, rb(target), rb(target), { advance: 6 }])
+      expect(eventsAt(both, TE)).toEqual([
+        { type: 'event', tick: TE, kind: 'deploy', target },
+        { type: 'event', tick: TE, kind: 'deploy', target },
+      ])
+      expect(logsWith(both, target, UNHANDLED, TE, both.world.tick)).toEqual([])
+      expect(latestRevertibleBatch(target, both.world.tick, both.telemetry())).toBeUndefined()
+    }
+  })
+
+  it('a noise deploy in the same tick as a rollback deploy is still a batch of its own (counted, not hidden by the tick)', () => {
+    const seed = 'rb-same-tick'
+    const faults = faultsOf(seed, { kind: 'bad_deploy', target: 'cart', startTick: START })
+    const sim = sequence(shop(seed, { faults, noise: [deployNoise('cart', TE, 'same tick')] }), [{ advance: ACT_AT }, rb('cart'), { advance: 3 }])
+    // te: the action event, then the noise (ADR-005 Emenda 3).
+    expect(eventsAt(sim, TE)).toEqual([
+      { type: 'event', tick: TE, kind: 'deploy', target: 'cart' },
+      { type: 'event', tick: TE, kind: 'deploy', target: 'cart', note: 'same tick' },
+    ])
+    expect(latestRevertibleBatch('cart', sim.world.tick, sim.telemetry())).toBe(TE)
+    sim.act(rb('cart').act)
+    sim.advance(1)
+    expect(eventsAt(sim, sim.world.tick)).toEqual([{ type: 'event', tick: sim.world.tick, kind: 'deploy', target: 'cart' }])
+    expect(latestRevertibleBatch('cart', sim.world.tick, sim.telemetry())).toBeUndefined()
+  })
+
+  it('"rollback em outro": a batch reverted elsewhere leaves the bad_deploy intact', () => {
+    for (const seed of ROLLBACK_SEEDS) {
+      const faults = faultsOf(seed, { kind: 'bad_deploy', target: 'cart', startTick: START })
+      const noise = [deployNoise('auth', START + 1)]
+      const acted = sequence(shop(seed, { faults, noise }), [{ advance: ACT_AT }, rb('auth'), { advance: UNTIL - ACT_AT }])
+      const plain = sequence(shop(seed, { faults, noise }), [{ advance: UNTIL }])
+      expect(eventsAt(acted, TE)).toEqual([{ type: 'event', tick: TE, kind: 'deploy', target: 'auth' }])
+      expect(logsWith(plain, 'cart', UNHANDLED, TE, UNTIL).length).toBeGreaterThan(0)
+      expect(logsWith(acted, 'cart', UNHANDLED, TE, UNTIL)).toEqual(logsWith(plain, 'cart', UNHANDLED, TE, UNTIL))
+    }
+  })
+
+  it('binding by startTick = batch tick: of two bad_deploy batches on the target, the rollback ends only the latest', () => {
+    for (const seed of ROLLBACK_SEEDS.slice(0, 3)) {
+      const faults = faultsOf(seed, { kind: 'bad_deploy', target, startTick: START }, { kind: 'bad_deploy', target, startTick: START + 2 })
+      const one = sequence(shop(seed, { faults }), [{ advance: ACT_AT }, rb(target), { advance: UNTIL - ACT_AT }])
+      expect(logsWith(one, target, UNHANDLED, TE, UNTIL).length).toBeGreaterThan(0)
+      expect(from(one, TE + 1)).toBe(from(plainRun(seed, faults.slice(0, 1)), TE + 1))
+    }
+  })
+})
+
+describe('rollback with a batch = process replacement without unavailability (ADR-012 §4, §5)', () => {
+  it('service_crash_loop on the target + deploy noise: the crash loop ends in te, no down of the action, one deploy event', () => {
+    const target = targetOf('service_crash_loop')
+    for (const seed of ROLLBACK_SEEDS) {
+      const faults = defaultFault(seed, 'service_crash_loop')
+      const noise = [deployNoise(target, 2)]
+      const acted = sequence(shop(seed, { faults, noise }), [{ advance: ACT_AT }, rb(target), { advance: UNTIL - ACT_AT }])
+      const noFault = sequence(shop(seed, { noise }), [{ advance: UNTIL }])
+      expect(logsWith(plainRun(seed, faults), target, EXITED, TE, UNTIL).length).toBeGreaterThan(0)
+      expect(logsWith(acted, target, EXITED, TE, UNTIL)).toEqual([])
+      expect(eventsAt(acted, TE)).toEqual([{ type: 'event', tick: TE, kind: 'deploy', target }])
+      expect(from(acted, TE + 1)).toBe(from(noFault, TE + 1))
+    }
+  })
+
+  it('connection_pool_exhaustion on the target + deploy noise: reset in te like restart, but the target keeps serving in te', () => {
+    const target = targetOf('connection_pool_exhaustion')
+    for (const seed of ROLLBACK_SEEDS) {
+      const config = shop(seed, { faults: defaultFault(seed, 'connection_pool_exhaustion'), noise: [deployNoise(target, 2)] })
+      const rolled = sequence(config, [{ advance: ACT_AT }, rb(target), { advance: UNTIL - ACT_AT }])
+      const restarted = sequence(config, [{ advance: ACT_AT }, { act: { kind: 'restart', target } }, { advance: UNTIL - ACT_AT }])
+      const plain = sequence(config, [{ advance: UNTIL }])
+      const conns = (sim: Simulation, tick: number) =>
+        sim.telemetry().metricsOf(target, tick, tick).filter((m) => m.instance === undefined).map((m) => m.connections)
+      expect(from(rolled, TE + 1)).not.toBe(from(plain, TE + 1))
+      // No down of the action in te (the restart of the same run has one).
+      for (const instance of instancesOf(target)) {
+        expect(isDownIn(rolled, TE, instance)).toBe(false)
+        expect(isDownIn(restarted, TE, instance)).toBe(true)
+      }
+      expect(allLogsWith(rolled, 'connection refused', TE)).toEqual([])
+      // The same generation 1 as the restart: the leak starts over from zero in te.
+      expect(conns(rolled, UNTIL)).toEqual(conns(restarted, UNTIL))
+    }
+  })
+
+  it('disk_full on the target + deploy noise: one deploy event, the fault intact (nothing else changes)', () => {
+    const target = targetOf('disk_full')
+    for (const seed of ROLLBACK_SEEDS) {
+      const config = shop(seed, { faults: defaultFault(seed, 'disk_full'), noise: [deployNoise(target, 2)] })
+      const acted = sequence(config, [{ advance: ACT_AT }, rb(target), { advance: UNTIL - ACT_AT }])
+      const plain = sequence(config, [{ advance: UNTIL }])
+      expect(eventsAt(acted, TE)).toEqual([{ type: 'event', tick: TE, kind: 'deploy', target }])
+      const noEvents = (sim: Simulation) => toNdjson(sim.telemetry().all().filter((r) => r.type !== 'event'))
+      expect(noEvents(acted)).toBe(noEvents(plain))
+    }
+  })
+
+  it('cache rule: rollback of redis with a batch = cold start (module events and down) plus the deploy event; without a batch nothing', () => {
+    for (const seed of ROLLBACK_SEEDS.slice(0, 3)) {
+      const acted = sequence(shop(seed, { noise: [deployNoise('redis', 2)] }), [{ advance: ACT_AT }, rb('redis'), { advance: 4 }])
+      expect(eventsAt(acted, TE)).toEqual([...coldStartEvents('redis', TE), { type: 'event', tick: TE, kind: 'deploy', target: 'redis' }])
+      expect(run(shop(seed), [{ advance: ACT_AT }, rb('redis'), { advance: 4 }])).toBe(run(shop(seed), [{ advance: ACT_AT + 4 }]))
+    }
+  })
+
+  it('the history is per simulation: reverted batches of one run are never seen by another', () => {
+    const config = shop('rb-iso', { faults: faultsOf('rb-iso', { kind: 'bad_deploy', target: 'cart', startTick: START }) })
+    const a = sequence(config, [{ advance: ACT_AT }, rb('cart'), { advance: 2 }])
+    const b = sequence(config, [{ advance: ACT_AT }, rb('cart'), { advance: 2 }])
+    expect(toNdjson(a.telemetry().all())).toBe(toNdjson(b.telemetry().all()))
+    const view: TelemetryView = b.telemetry()
+    expect(latestRevertibleBatch('cart', b.world.tick, view)).toBeUndefined()
+    const fresh = sequence(config, [{ advance: ACT_AT }])
+    expect(latestRevertibleBatch('cart', fresh.world.tick, fresh.telemetry())).toBe(START)
+  })
+})
+
+describe('DET with rollback: same seed + same act/advance sequence => identical NDJSON (SHA-256)', () => {
+  it.each(faultKinds)('%s: rollbacks of its target around deploy noise, two runs, same SHA-256', (kind) => {
+    for (const seed of ['det-rb-1', 'det-rb-2', 'det-rb-3']) {
+      const target = targetOf(kind)
+      const steps: Step[] = [{ advance: 8 }, rb(target), { advance: 3 }, rb(target), rb('redis'), { advance: 4 }, rb(target), { advance: 6 }]
+      const config = shop(seed, { faults: faultsOf(seed, { kind, startTick: 5 }), noise: [deployNoise(target, 3), deployNoise('redis', 4)] })
+      expect(sha(run(config, steps))).toBe(sha(run(config, steps)))
     }
   })
 })
