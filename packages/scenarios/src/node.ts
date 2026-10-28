@@ -1,12 +1,16 @@
 /**
- * Node-only helpers ("./node" entry, ADR-014 §4): read scenario YAML files from disk. Used by this
- * package's tests and scripts; never re-exported from "." so the browser bundle has no node:fs.
+ * Node-only entry ("./node", ADR-014 §4 and Emenda 1): the YAML loader (parseScenario) and the
+ * helpers that read scenario YAML files from disk. Used by this package's tests and scripts and by
+ * the Node scripts of apps/web; never re-exported from "." so the browser bundle has neither
+ * node:fs nor the `yaml` library ("the UI does not know YAML", SPEC §6, PR-19).
  */
 import { readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { ScenarioError } from './errors.js'
 import { parseScenario } from './load.js'
 import type { EngineRuntime, Scenario } from './types.js'
+
+export { parseScenario }
 
 /** Reads and parses one YAML file. `path` is used as the `file` of any ScenarioError. */
 export function loadScenarioFile(path: string, engine: EngineRuntime): Scenario {

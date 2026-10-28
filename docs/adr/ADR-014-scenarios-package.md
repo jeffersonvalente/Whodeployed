@@ -29,11 +29,12 @@ SPEC §6 diz que `packages/scenarios` depende de "engine (tipos)". O loader (CN-
 packages/scenarios/
   scenarios/*.yaml          5 YAML da fase + _TEMPLATE.yaml (ignorado pelo loader: prefixo "_")
   src/types.ts              contrato (Arquiteto)
-  src/index.ts              API pública (navegador e Node): tipos + parseScenario, toSimulationConfig,
-                            matchesPattern, repertoire, inRepertoire, checkMitigations, ScenarioError
+  src/index.ts              API do navegador: tipos + toSimulationConfig, matchesPattern, repertoire,
+                            inRepertoire, checkMitigations, ScenarioError (Emenda 1: nada alcançável importa yaml/node:*)
   src/errors.ts             class ScenarioError implements ScenarioErrorInfo
-  src/load.ts               parseScenario (yaml -> Scenario)
-  src/node.ts               loadScenarioFile / loadScenarioDir (node:fs; só Node: scripts e testes; export "./node")
+  src/config.ts             toSimulationConfig (Emenda 1)
+  src/load.ts               parseScenario (yaml -> Scenario); exportado só por "./node" (Emenda 1)
+  src/node.ts               parseScenario, loadScenarioFile / loadScenarioDir (node:fs; só Node: scripts e testes; export "./node")
   src/patterns.ts           parse e matchesPattern
   src/repertoire.ts         a tabela de repertório (único lugar, PR-6) e inRepertoire
   src/mitigation.ts         checkMitigations: regra de mitigação eficaz da ADR-013 §4 (única implementação)
@@ -73,7 +74,7 @@ Janelas fixas em 30 ticks (decisão delegada): o PRD dá ao Pleno "tudo do Júni
 ### 4. Bundle para a UI (SPEC §6 "a UI não conhece YAML"; PR-19)
 
 - `pnpm --filter @whodeployed/scenarios build` = `tsc` + `scripts/build-data.mjs`, que carrega todos os YAML com o próprio loader (com o `EngineRuntime` montado do motor, que o script tem em `devDependencies`) e escreve `dist/data.js` (`export const bundle = {...}` com `campaign` e `testIncidents` ordenados por `id`) e `dist/data.d.ts` (tipado como `ScenarioBundle`). YAML inválido = build falha.
-- `package.json` `exports`: `"."` → `dist/index.js` (API e tipos), `"./data"` → `dist/data.js` e `"./node"` → `dist/node.js`. A UI importa `@whodeployed/scenarios/data` e nunca importa `yaml` (PR-19). `src/node.ts` não é reexportado por `"."` para o bundle do navegador não puxar `node:fs`; scripts Node importam `@whodeployed/scenarios/node`.
+- `package.json` `exports`: `"."` → `dist/index.js` (API e tipos), `"./data"` → `dist/data.js` e `"./node"` → `dist/node.js`. A UI importa `@whodeployed/scenarios/data` e nunca importa `yaml` (PR-19). `src/node.ts` não é reexportado por `"."` para o bundle do navegador não puxar `node:fs` nem `yaml` (Emenda 1); scripts Node importam `@whodeployed/scenarios/node`.
 - Consequência para o CI: o `build` dos pacotes passa a rodar **antes** de `lint`, `typecheck` e `test` no `ci.yml` (a UI precisa do `dist/` do motor e dos cenários). Nenhum passo do GATE-1 sai do workflow (EN-1); só muda a posição do `build`.
 
 ## Consequências
@@ -90,3 +91,43 @@ Janelas fixas em 30 ticks (decisão delegada): o PRD dá ao Pleno "tudo do Júni
 - **Repertório no protótipo e cópia no teste de conteúdo:** duas tabelas divergem; PR-6 exige um único lugar, e CN-5 e PR-6 precisam da mesma.
 - **Casar `keySignal` por texto livre:** frágil e impossível de testar por máquina.
 - **Motor em `dependencies` do pacote de cenários, com import de valor em `src/`:** contraria SPEC §6 ("engine (tipos)"); a injeção do `EngineRuntime` cumpre CN-4 e CN-5 sem mudar o spec.
+
+## Emenda 1 — 2026-10-27 (QA de #97 e #95: `yaml` no bundle do navegador; ligação de `createSession`)
+
+### Contexto
+
+A §1 pôs `parseScenario` na entrada `.`, descrita como "API pública (navegador e Node)". `src/load.ts` importa `yaml`. O QA do #97 mediu: quando `apps/web/src` importa qualquer valor de `.` (ex.: `matchesPattern`), o `dist/` do web sobe de 142.7 kB para 171.2 kB e passa a conter a biblioteca (`tag:yaml.org,2002`, 3 ocorrências). O Rollup descarta o código de `load.ts`, mas mantém `yaml`, porque o pacote não declara `sideEffects`. O lint de imports de `apps/web` (PR-19) só vê imports diretos e não pega o transitivo. Isso contraria o espírito de SPEC §6 ("a UI não conhece YAML") e o mesmo raciocínio que já tirou `node.ts` de `.` (§4). A T2.22 (#95) exporta só `makeCreateSession(rules)`, e nenhuma tarefa tinha `src/session/session.ts` na lista de arquivos para fazer a ligação com as funções reais.
+
+### Decisão
+
+1. **A entrada `.` não alcança `yaml` nem `node:*`.** Todo módulo alcançável a partir de `src/index.ts` por import de valor é um módulo relativo do próprio pacote (o motor continua só como tipo, §1.1). `parseScenario` sai de `.` e passa a ser exportado por `./node`, ao lado de `loadScenarioFile` e `loadScenarioDir`. `./node` é a entrada das ferramentas Node: loader YAML e leitura de disco. `toSimulationConfig` sai de `src/load.ts` para `src/config.ts` e continua em `.`, porque a sessão do navegador precisa dele (ADR-015 §5). O layout da §1 foi atualizado no lugar; as linhas que mudam são:
+
+```
+  src/index.ts              API do navegador: tipos + toSimulationConfig, matchesPattern, repertoire,
+                            inRepertoire, checkMitigations, ScenarioError. Nada alcançável importa yaml/node:*
+  src/config.ts             toSimulationConfig (Scenario -> SimulationConfig)
+  src/load.ts               parseScenario (yaml -> Scenario); exportado só por "./node"
+  src/node.ts               "./node": parseScenario, loadScenarioFile, loadScenarioDir (scripts, testes, build-data)
+```
+
+   Quem usa `parseScenario` (testes do pacote, `scripts/build-data.mjs` da T2.18, scripts de `apps/web`) importa de `@whodeployed/scenarios/node`. A ADR-015 §4 já autoriza `./node` nos scripts e veta em `apps/web/src`.
+
+2. **Duas verificações, uma por camada:**
+   - `packages/scenarios/test/browser-entry.test.ts`: percorre o grafo de imports de valor a partir de `src/index.ts` e falha se aparecer qualquer especificador não relativo (`yaml`, `node:*` ou outro pacote) ou se `load.ts`/`node.ts` forem alcançados. Um caso de controle prova que o mesmo percurso, a partir de `src/node.ts`, encontra `yaml` e `node:fs`.
+   - `apps/web/test/bundle.test.ts`: faz um build de produção real com o `vite.config.ts` do web (mesmos plugins, `define` e `onwarn` de PR-1) num diretório temporário, com uma entrada extra (`test/bundle/probe.ts`) que alcança todos os exports de valor de `@whodeployed/scenarios` `.` e o `createSession` ligado. Falha se o JavaScript emitido contiver `tag:yaml.org,2002` (marcador da biblioteca `yaml`) ou `__vite-browser-external` (stub do Vite para built-in do Node). Também falha se não contiver as strings da sessão e de `config.ts`, para a verificação não passar no vazio.
+
+   Escolhemos teste do Vitest em vez de passo novo no `ci.yml`. O teste roda em `pnpm -r test` local e no CI, sem passo novo no workflow, que outras tarefas da onda também editam. A entrada de prova cobre `.` inteiro mesmo antes de `app.tsx` alcançar a sessão (T2.27/T2.28): hoje o `dist/` real não importa `session.ts`, e um grep só no `dist/` passaria no vazio. O custo é um build a mais no `test` do web, cerca de 3 s.
+
+3. **Ligação de `createSession` (ADR-015 §5):** `apps/web/src/session/session.ts` exporta `createSession: CreateSession = makeCreateSession({ inRepertoire, toSimulationConfig })`, com as funções reais de `.`. Com isso o web passa a importar valor de `.`, e a verificação do item 2 cobre esse import. `makeCreateSession` continua exportado para os testes que injetam regras. A UI (T2.27 em diante) e os scripts Node (T2.29, T2.32) usam `createSession`.
+
+### Alternativas descartadas
+
+- **Só `"sideEffects": false` em `packages/scenarios/package.json`:** o QA mediu que resolve no build de produção (142.9 kB, sem marcador). Mas a garantia depende da heurística de tree-shaking do bundler. O servidor de desenvolvimento do Vite (`pnpm dev`) continuaria carregando `yaml` no navegador. E a regra "a UI não conhece YAML" ficaria implícita, dependendo de uma flag que qualquer `import` com efeito colateral no pacote invalidaria sem aviso. Com a separação por entrada, a fronteira é estrutural e testável no código-fonte. A flag não foi adicionada, para que a verificação do `dist/` não seja mascarada por ela.
+- **Entrada nova `./yaml` ou `./loader` só para `parseScenario`:** equivalente, mas acrescenta uma terceira entrada Node. Os únicos consumidores de `parseScenario` já são Node e já usam `./node`.
+- **Grep do `dist/` real num passo de CI:** passa no vazio enquanto `app.tsx` não alcança a sessão, e só roda depois de `pnpm build`.
+
+### Consequências
+
+- `@whodeployed/scenarios` `.` perde `parseScenario`. Na data desta emenda, nenhum código fora de `packages/scenarios` o importava de `.`. Os PRs abertos #92 (T2.23) e #93 (T2.19) não o usam.
+- T2.18 (`build-data.mjs`) importa `parseScenario`/`loadScenarioDir` de `@whodeployed/scenarios/node`. T2.27 usa `createSession`, nunca `makeCreateSession`. As linhas das tarefas em `FASE-2.tasks.md` foram atualizadas.
+- O tamanho do `dist/` do web deixa de depender de quais valores de `.` a UI importa, no que diz respeito ao `yaml`.

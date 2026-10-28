@@ -8,11 +8,10 @@
  * from @whodeployed/scenarios (`inRepertoire`, the single table of PR-6). No randomness and no
  * clock (D-4): the only wall-clock read is the injected `deps.wallClock`, which feeds `wallMs` only.
  *
- * Why a factory (`makeCreateSession`) and not a bare `createSession`: `inRepertoire` (T2.11) and
- * `toSimulationConfig` (T2.10) are runtime values of @whodeployed/scenarios that are not on main
- * yet. They are injected as `SessionRules`; once they are exported, the binding is one line:
- *
- *   export const createSession: CreateSession = makeCreateSession({ inRepertoire, toSimulationConfig })
+ * `createSession` (the contract's function, ADR-015 §5) is `makeCreateSession` bound to the real
+ * rules of @whodeployed/scenarios: `inRepertoire` (T2.11) and `toSimulationConfig` (T2.10), both
+ * from the browser-safe "." entry (ADR-014 Emenda 1). Tests inject other rules through
+ * `makeCreateSession`; the UI and the Node scripts use `createSession`.
  *
  * Notebook (T2.23): `hypothesis`, `discard` and `end` validate through ./notebook (pure) and
  * append a zero-cost step with `recordFreeStep` (tickCost 0, impactAfter = impact now); `end`
@@ -20,6 +19,7 @@
  */
 import type { Action, ActionResult, Answer, ComponentName, Question, Simulation } from '@whodeployed/engine'
 import type { InRepertoire, PlayableLevel, ReferenceStep, Scenario, ToSimulationConfig } from '@whodeployed/scenarios'
+import { inRepertoire, toSimulationConfig } from '@whodeployed/scenarios'
 import { SessionError } from './errors'
 import type { SessionErrorCode } from './errors'
 import { checkDiscard, checkEnd, checkHypothesis, hypothesesOf, systemComponents } from './notebook'
@@ -254,3 +254,6 @@ function openSession(scenario: Scenario, deps: SessionDeps, rules: SessionRules)
 export function makeCreateSession(rules: SessionRules): CreateSession {
   return (scenario, deps) => openSession(scenario, deps, rules)
 }
+
+/** The contract's `createSession`, with the single repertoire table and the real engine input (PR-6). */
+export const createSession: CreateSession = makeCreateSession({ inRepertoire, toSimulationConfig })

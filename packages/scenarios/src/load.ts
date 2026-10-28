@@ -1,5 +1,6 @@
 /**
- * parseScenario (YAML text -> Scenario) and toSimulationConfig (Scenario -> engine input).
+ * parseScenario (YAML text -> Scenario). Exported only by the "./node" entry, never by ".": this
+ * module imports the `yaml` library, which must not reach the browser bundle (ADR-014 Emenda 1).
  * FASE-2 CN-4, CN-1 (fields), DET; ADR-014 §1.1 and §2.
  *
  * - Structure first: every required field of SPEC §7 plus `impactBudget` and `review` (with
@@ -14,8 +15,9 @@
  *   property of each phase-2 YAML, checked by that scenario's tests.
  * - Pure and deterministic: same text and engine => a structurally identical Scenario.
  */
-import type { Action, Fault, FaultInput, NoiseEvent, Question, SimulationConfig } from '@whodeployed/engine'
+import type { Action, Fault, FaultInput, NoiseEvent, Question } from '@whodeployed/engine'
 import { parseDocument } from 'yaml'
+import { toSimulationConfig } from './config.js'
 import { ScenarioError, isEngineErrorLike } from './errors.js'
 import { isQuestionKind, parsePattern, questionKinds } from './patterns.js'
 import type {
@@ -26,7 +28,6 @@ import type {
   ReferenceStep,
   ReviewSpec,
   Scenario,
-  ToSimulationConfig,
 } from './types.js'
 
 /** Name of the system when the YAML omits `system` (SPEC §7 marks it optional; phase 2 has only this one). */
@@ -271,17 +272,4 @@ export const parseScenario: ParseScenario = (source: string, file: string, engin
   }
   withEngine(file, () => engine.createSimulation(toSimulationConfig(scenario, engine)))
   return scenario
-}
-
-/** The engine input of a scenario and nothing else: no scenario text reaches the engine (EN-5). */
-export const toSimulationConfig: ToSimulationConfig = (scenario: Scenario, engine: EngineRuntime): SimulationConfig => {
-  const system = has(engine.systems, scenario.system) ? engine.systems[scenario.system] : undefined
-  if (system === undefined) {
-    throw new ScenarioError({
-      file: scenario.id,
-      field: 'system',
-      reason: `unknown system '${scenario.system}' (valid values: ${Object.keys(engine.systems).join(', ')})`,
-    })
-  }
-  return { system, seed: scenario.seed, faults: scenario.faults, noise: scenario.noise }
 }
